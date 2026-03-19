@@ -1,0 +1,12 @@
+.idea/*
+*/logs/
+.env
+.DS_Store
+.python-version
+.venv/
+__pycache__/
+*.pyc
+.copilot-tracking/
+.github/
+temp/
+dist/
