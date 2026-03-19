@@ -1,5 +1,12 @@
-# Building Game Task - Quick Guide
+# AgentWhetters BWIM
+
+Copied and adaptedfrom the [build_what_i_men agent](https://github.com/ltl-uva/build_what_i_mean).
+
 Based on the minimal template for building [A2A (Agent-to-Agent)](https://a2a-protocol.org/latest/) green agents compatible with the [AgentBeats](https://agentbeats.dev) platform.
+
+This agent is designed use gpt-4o-mini for the bwim problem.
+
+It incorporates spatial reasoning skills, instruction decomposition, underspecification detection, and adaptive prompt enrichment for the build what I mean task.
 
 ## Project Structure
 
@@ -8,7 +15,8 @@ pragmatic_builder/
 ├─ builder_agent.py   # Main server entrypoint + agent card
 ├─ green_agent.py     # Agent logic
 ├─ evaluator_proxy.py # Proxy server for evaluation flows
-└─ agentbeats/        # AgentBeats integration helpers
+├─ agentbeats/        # AgentBeats integration helpers
+└─ skills/            # skills used to solve the bwim instructions
 data/                 # Scenario data files
 Dockerfile            # Docker configuration
 pyproject.toml        # Python dependencies
