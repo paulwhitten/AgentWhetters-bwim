@@ -98,7 +98,7 @@ def prepare_agent_card(url: str) -> AgentCard:
         name="AgentWhetters_BWIM",
         description="Spatial reasoning agent from AgentWhetters, powered by gpt-4o-mini.",
         url=url,
-        version="0.1.0",
+        version="1.0.0",
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain"],
         capabilities=AgentCapabilities(),
