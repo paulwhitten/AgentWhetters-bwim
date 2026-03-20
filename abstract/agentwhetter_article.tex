@@ -1,37 +1,159 @@
 \documentclass{article}
 
-% Preamble (add packages and settings here)
-\title{AgentWhetter: Experimenting with Spatial Reasoning Skills in Agents}
+% Preamble
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\title{AgentWhetters: Spatial Reasoning Skills for Cost-Effective\\Block-Building Agents}
 \author{
     Whitten, Paul\\
   \texttt{pcw@case.edu}
   \and
   Chen, Li-Jen\\
   \texttt{chenlijen@gmail.com}
-  \and 
+  \and
   Baddam, Sharath\\
   \texttt{sbaddam@alumni.purdue.edu}
 }
-\date{\today} % or a specific date, or leave empty to omit
+\date{March 2026}
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-
-    Test abstract.
-
+We present \textbf{AgentWhetters BWIM}, a purple agent for the AgentBeats
+\emph{Build What I Mean} (BWIM) benchmark that constructs block structures on a
+$9\!\times\!5\!\times\!9$ grid from underspecified natural-language
+instructions. The system originated as an investigation into enabling small,
+cost-efficient language models, originally targeting edge deployment with
+limited compute, to perform reliable 3D spatial reasoning.  It has since been
+adapted as a competition entry for the AgentX AgentBeats Phase~2 Sprint~1, where
+it is evaluated on structural accuracy and question efficiency against both a
+rational and an unreliable architect partner.  Rather than relying on large
+frontier models, our approach augments GPT-4o-mini with a modular skills
+pipeline that offloads spatial computation to deterministic code, reducing the
+burden on the language model to tasks it handles well: instruction
+comprehension, ambiguity detection, and structured plan generation.  The name
+\emph{AgentWhetters} reflects our view that competitions such as AgentX
+AgentBeats offer a valuable opportunity to \emph{whet} or \emph{sharpen} our
+skills in developing, evaluating, and iterating on autonomous agents under
+realistic constraints.
 \end{abstract}
 
-% \section{Introduction}
+\section{Architecture}
 
-% \section{Introduction}
+The agent decomposes each building instruction through a five-stage pipeline:
+\textbf{parse}, \textbf{plan}, \textbf{detect underspecification},
+\textbf{execute}, and \textbf{format}.  If any stage fails, control falls back
+to a direct LLM call with a carefully engineered system prompt.
 
-% Content of the introduction section.
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Instruction Parser.} Extracts the green agent's instruction
+    text, separates the building directive from any existing grid state
+    (START\_STRUCTURE), and normalizes the representation for downstream stages.
 
-% \section{Methodology}
+  \item \textbf{Structure Analyzer.} Before planning, the current grid state is
+    analyzed to detect geometric primitives rows, stacks, L-shapes,
+    T-shapes and produce a structured description.  This pre-computed geometry
+    is injected into the planner prompt so the language model reasons over named
+    shapes rather than raw coordinate lists.
 
-% Content of the methodology section.
+  \item \textbf{Build Planner (LLM).} The language model decomposes the
+    instruction into a sequence of atomic build steps expressed as typed JSON
+    actions (\texttt{stack}, \texttt{place\_relative}, \texttt{extend\_row},
+    etc.), each with a color, count, and position specification.  Nine worked
+    examples in the system prompt covering: chains, L-shapes, T-shapes, and
+    edge placements anchor the model's spatial reasoning within the coordinate
+    system.
+
+  \item \textbf{Plan Verifier.} A rule-based post-planner validates direction
+    consistency, ``each/every'' expansion, horizontal-versus-vertical intent, and
+    block-count plausibility.  Detected mismatches trigger automatic correction
+    (e.g., reversing a direction error) before execution.
+
+  \item \textbf{Spatial Executor.} A deterministic engine executes each plan
+    step on an in-memory grid model, resolving relative references
+    (``leftmost,'' ``the red one''), computing gravity-based y-coordinates, and
+    chaining positional context across steps.  No LLM call is involved at this
+    stage; all coordinate arithmetic is exact.
+
+  \item \textbf{Response Formatter.} Translates the final grid state into the
+    protocol-required \texttt{[BUILD]} format and validates the output before
+    transmission.
+\end{enumerate}
+
+\section{Underspecification Detection}
+
+A critical challenge in the benchmark is that many instructions omit color or
+block count.  Our agent employs a two-tiered detection strategy:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Missing color.} Heuristic analysis determines whether a color
+    can be inferred from context (e.g., reusing the sole color mentioned) or is
+    genuinely ambiguous.  In the latter case, the agent issues an \texttt{[ASK]}
+    query to the architect.  Because a correct answer yields $+10$ while asking
+    costs $-5$, the expected value of asking ($+5$) exceeds guessing ($\approx
+    0$).  A multi-color disambiguation loop handles instructions that leave
+    multiple colors unspecified.
+
+  \item \textbf{Missing count.} Counts are never asked about; instead, the
+    executor infers them from adjacent stack heights, referenced structure
+    dimensions, or a default of three, matching the distribution observed in
+    the stimulus data.  The decision not to ask is grounded in expected value:
+    asking costs $-5$ and yields $+10$ for a net of $+5$, while guessing yields
+    $+10$ when correct and $-10$ when wrong, giving $\text{EV}_{\text{guess}} =
+    20p - 10$.  Guessing dominates asking whenever accuracy $p > 0.75$.  Because
+    the count heuristic draws on structurally correlated signals (e.g., matching
+    the height of an adjacent stack), its empirical accuracy comfortably exceeds
+    this threshold, making asking a net-negative strategy for counts.
+\end{itemize}
+
+\section{Adaptive Prompt Enrichment}
+
+We observe that certain spatial concepts such as``each end,'' chain references,
+L-shape extensions, T-shape junctions are disproportionately error-prone for
+small models.  Our \emph{adaptive prompt enrichment} system scans each incoming
+instruction against a library of 15 pattern-matching rules.  When a rule fires,
+a short ($\leq$5-line) concept definition with a concrete coordinate example is
+injected into the user prompt immediately before the LLM call.  This places the
+relevant spatial rule in the model's local attention window, adjacent to the
+instruction it must interpret.  Rules are independent and composable; multiple
+may fire on a single instruction without conflict.  The enrichment library is
+validated against the full stimulus set to ensure zero false positives on
+fully-specified instructions.
+
+\section{Additional Design Considerations}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Chain reference patching.} A dedicated pre-processing pass
+    resolves chain references (``to the right of the green one'') that span
+    multiple build steps, ensuring positional context propagates correctly.
+
+  \item \textbf{Ask-once guard.} The agent tracks whether it has already asked a
+    question in the current round, preventing redundant queries that would incur
+    additional point penalties.
+
+  \item \textbf{Cost efficiency.} The entire pipeline uses GPT-4o-mini, one of
+    the lowest-cost commercial models available.  Deterministic execution of
+    spatial computation means the LLM is called at most twice per round (planning
+    plus at most one clarification re-plan), keeping token usage minimal.
+
+  \item \textbf{Graceful degradation.} If the skills pipeline encounters an
+    unrecoverable error at any stage, the agent falls back to a direct LLM call
+    with a comprehensive system prompt, ensuring every round produces a valid
+    \texttt{[BUILD]} response.
+\end{itemize}
+
+\section{Results}
+
+In local evaluation against the benchmark's 160-round scenario (combining
+rational and unreliable architect partners), the agent achieves approximately
+82\% structural accuracy with a net score of $+780$.  The primary remaining
+failure modes involve complex multi-step shapes (T-junctions, ``each end''
+expansions) and inherently ambiguous height specifications. These are areas
+where even frontier models show limited reliability without additional
+grounding.
 
 \end{document}
