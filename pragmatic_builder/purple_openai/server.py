@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from skills.instruction_parser import parse_green_message, ParsedInstruction
 from skills.build_planner import BuildPlanner
 from skills.spatial_executor import SpatialExecutor, ExecutionError
-from skills.underspec_detector import detect_underspec_heuristic, patch_instruction_with_color
+from skills.underspec_detector import detect_underspec_heuristic, patch_instruction_with_color, patch_instruction_with_count
 from skills.response_formatter import format_build_response, validate_build_response
 from skills.grid import Grid, GridConfig
 from skills.structure_analyzer import analyze_structure
@@ -122,13 +122,17 @@ def _make_openai_client(api_key: str, base_url: str | None = None) -> AsyncOpenA
 class OpenAIPurpleAgent(AgentExecutor):
     """Purple agent with skills-based build pipeline.
 
-    Pipeline: parse → plan (LLM) → detect underspec → execute (deterministic) → format
+    Pipeline: parse -> plan (LLM) -> detect underspec -> execute (deterministic) -> format
     Falls back to direct LLM call if the skills pipeline fails at any stage.
 
     When a color is genuinely under-specified (the instruction uses some colors but
     leaves one or more unspecified), the agent ASKs for the missing color.  After
     receiving the answer it re-runs execution with the clarified color and BUILDs.
     Asking costs -5 but getting it right earns +10, so net +5 beats guessing (~0 EV).
+
+    When a count is missing but color is known, the agent ASKs for the missing
+    count.  Heuristic count inference is only 64.6% accurate, so asking (EV +5.0)
+    dominates guessing (EV +2.9).  Only one question per round; color has priority.
     """
 
     def __init__(self, debug: bool = False):
@@ -184,6 +188,34 @@ class OpenAIPurpleAgent(AgentExecutor):
                 colors.append(c)
         return colors
 
+    _WORD_TO_INT = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    }
+
+    @classmethod
+    def _extract_answer_count(cls, text: str) -> int | None:
+        """Extract a numeric count from an answer message.
+
+        Returns the first integer found in the answer body, or None if
+        no answer pattern or no number found.
+        E.g. "Answer: 4 blocks (-5 points)" -> 4
+             "Answer: three (-5 points for asking)" -> 3
+        """
+        m = cls._ANSWER_RE.match(text.strip())
+        if not m:
+            return None
+        answer_body = m.group(1).strip().rstrip(".,!").lower()
+        # Try digit first
+        digit_match = re.search(r'\b(\d+)\b', answer_body)
+        if digit_match:
+            return int(digit_match.group(1))
+        # Try word numbers
+        for word, val in cls._WORD_TO_INT.items():
+            if re.search(r'\b' + word + r'\b', answer_body):
+                return val
+        return None
+
     # -------------------------------------------------------------------
     # Main execute
     # -------------------------------------------------------------------
@@ -219,58 +251,154 @@ class OpenAIPurpleAgent(AgentExecutor):
         # ------------------------------------------------------------------
         # Check if this is an answer to a question we asked
         # ------------------------------------------------------------------
-        answered_colors = self._extract_answer_colors(parsed.instruction_text)
         pending = self._pending.pop(ctx_id, None)
+        ask_type = pending.get("ask_type", "color") if pending else "color"
 
-        if answered_colors and pending:
+        # Try to extract the appropriate answer based on what we asked
+        answered_colors = self._extract_answer_colors(parsed.instruction_text)
+        answered_count = self._extract_answer_count(parsed.instruction_text)
+
+        if pending and (answered_colors or answered_count is not None):
             # Keep ctx_id in self._asked so the re-run cannot ASK again.
             # It will be cleared on the next feedback message (new round).
             self._asked.add(ctx_id)
 
-            # ── Disambiguate multi-color answers ──
-            # The green agent often answers "Blue and Green" where one color
-            # matches what's already in the instruction and the other is the
-            # NEW color for the unspecified blocks.  Filter out colors already
-            # present in the instruction text to find the truly new one.
-            original_instruction = pending["parsed"].instruction_text
-            instruction_lower = original_instruction.lower()
-            instruction_colors = {
-                c for c in self._COLOR_NAMES if c in instruction_lower
-            }
+            if ask_type == "compound":
+                # ── Compound answer path: extract both color and count ──
+                # Disambiguate color (same logic as color-only path)
+                original_instruction = pending["parsed"].instruction_text
+                instruction_lower = original_instruction.lower()
+                instruction_colors = {
+                    c for c in self._COLOR_NAMES if c in instruction_lower
+                }
 
-            if len(answered_colors) > 1:
-                new_colors = [
-                    c for c in answered_colors
-                    if c.lower() not in instruction_colors
-                ]
-                # Use the first NEW color; fall back to last answered if all match
-                color_str = new_colors[0] if new_colors else answered_colors[-1]
+                if len(answered_colors) > 1:
+                    new_colors = [
+                        c for c in answered_colors
+                        if c.lower() not in instruction_colors
+                    ]
+                    color_str = new_colors[0] if new_colors else answered_colors[-1]
+                else:
+                    color_str = answered_colors[0] if answered_colors else "Purple"
+
                 logger.info(
-                    "Multi-color answer %s, instruction has %s → using '%s'",
-                    answered_colors, instruction_colors, color_str,
+                    "Compound answer: color='%s', count=%s",
+                    color_str, answered_count,
                 )
-            else:
-                color_str = answered_colors[0]
 
-            logger.info("Received answer color '%s', patching instruction and re-planning", color_str)
-            # Inject the answered color into the instruction text BEFORE the LLM sees it
-            patched_text = patch_instruction_with_color(
-                pending["parsed"].instruction_text, color_str
-            )
-            pending["parsed"].instruction_text = patched_text
-            logger.info("Patched instruction: %s", patched_text[:200])
-            # Re-run the full pipeline with the fully-specified instruction
-            response = await self._skills_pipeline(
-                pending["parsed"], ctx_id, pending.get("original_input", "")
-            )
-            if response is None:
-                logger.info("Patched pipeline failed, falling back to LLM")
-                combined = (
-                    pending.get("original_input", "")
-                    + f"\n\nThe answer to the question is: {color_str}. "
-                    "Use this color for the unspecified blocks. Respond with [BUILD]."
+                # Patch color first, then count
+                patched_text = patch_instruction_with_color(
+                    pending["parsed"].instruction_text, color_str
                 )
-                response = await self._direct_llm_call(combined, ctx_id)
+                if answered_count is not None:
+                    patched_text = patch_instruction_with_count(
+                        patched_text, answered_count,
+                    )
+                    pending["parsed"]._answered_count = answered_count
+
+                logger.info("Compound-patched instruction: %s", patched_text[:200])
+                pending["parsed"].instruction_text = patched_text
+                response = await self._skills_pipeline(
+                    pending["parsed"], ctx_id,
+                    pending.get("original_input", ""),
+                    override_count=answered_count,
+                )
+                if response is None:
+                    logger.info("Compound-patched pipeline failed, falling back to LLM")
+                    count_hint = f" {answered_count}" if answered_count else ""
+                    combined = (
+                        pending.get("original_input", "")
+                        + f"\n\nThe answer to the question is: {color_str}"
+                        + (f", {answered_count} blocks" if answered_count else "")
+                        + f". Use {color_str} for the unspecified blocks"
+                        + (f" and build exactly{count_hint} blocks for the"
+                           f" unspecified stack" if answered_count else "")
+                        + ". Respond with [BUILD]."
+                    )
+                    response = await self._direct_llm_call(combined, ctx_id)
+
+            elif ask_type == "count" and answered_count is not None:
+                # ── Count answer path ──
+                uncounted_color = pending.get("uncounted_color", "")
+                logger.info(
+                    "Received count answer: %d (color=%s), "
+                    "patching instruction and injecting into pipeline",
+                    answered_count, uncounted_color or "any",
+                )
+                # Patch the instruction text to include the answered
+                # count BEFORE sending to the LLM planner.  This is
+                # critical: the LLM receives "build a stack of 3 blue
+                # blocks" instead of "build a blue stack" and produces
+                # the correct count in its plan.
+                patched_text = patch_instruction_with_count(
+                    pending["parsed"].instruction_text,
+                    answered_count,
+                    target_color=uncounted_color,
+                )
+                logger.info("Count-patched instruction: %s", patched_text[:200])
+                pending["parsed"].instruction_text = patched_text
+                pending["parsed"]._answered_count = answered_count
+                response = await self._skills_pipeline(
+                    pending["parsed"], ctx_id,
+                    pending.get("original_input", ""),
+                    override_count=answered_count,
+                )
+                if response is None:
+                    logger.info("Count-patched pipeline failed, falling back to LLM")
+                    color_hint = f" {uncounted_color}" if uncounted_color else ""
+                    combined = (
+                        pending.get("original_input", "")
+                        + f"\n\n[IMPORTANT: The instruction says to build a"
+                        f" stack but does not specify how many{color_hint}"
+                        f" blocks. The correct number is {answered_count}."
+                        f" Build exactly {answered_count}{color_hint} blocks"
+                        f" for the unspecified stack. Do NOT ask questions."
+                        f" Respond ONLY with [BUILD].]"
+                    )
+                    response = await self._direct_llm_call(combined, ctx_id)
+
+            else:
+                # ── Color answer path (existing logic) ──
+                # Disambiguate multi-color answers.
+                # The green agent often answers "Blue and Green" where one
+                # color matches what is already in the instruction and the
+                # other is the NEW color for the unspecified blocks.
+                original_instruction = pending["parsed"].instruction_text
+                instruction_lower = original_instruction.lower()
+                instruction_colors = {
+                    c for c in self._COLOR_NAMES if c in instruction_lower
+                }
+
+                if len(answered_colors) > 1:
+                    new_colors = [
+                        c for c in answered_colors
+                        if c.lower() not in instruction_colors
+                    ]
+                    color_str = new_colors[0] if new_colors else answered_colors[-1]
+                    logger.info(
+                        "Multi-color answer %s, instruction has %s, using '%s'",
+                        answered_colors, instruction_colors, color_str,
+                    )
+                else:
+                    color_str = answered_colors[0] if answered_colors else "Purple"
+
+                logger.info("Received answer color '%s', patching instruction and re-planning", color_str)
+                patched_text = patch_instruction_with_color(
+                    pending["parsed"].instruction_text, color_str
+                )
+                pending["parsed"].instruction_text = patched_text
+                logger.info("Patched instruction: %s", patched_text[:200])
+                response = await self._skills_pipeline(
+                    pending["parsed"], ctx_id, pending.get("original_input", "")
+                )
+                if response is None:
+                    logger.info("Patched pipeline failed, falling back to LLM")
+                    combined = (
+                        pending.get("original_input", "")
+                        + f"\n\nThe answer to the question is: {color_str}. "
+                        "Use this color for the unspecified blocks. Respond with [BUILD]."
+                    )
+                    response = await self._direct_llm_call(combined, ctx_id)
         else:
             # Normal instruction ── run the full pipeline
             response = await self._skills_pipeline(parsed, ctx_id, user_input)
@@ -301,7 +429,8 @@ class OpenAIPurpleAgent(AgentExecutor):
         )
 
     async def _skills_pipeline(
-        self, parsed: ParsedInstruction, ctx_id: str, original_input: str = ""
+        self, parsed: ParsedInstruction, ctx_id: str, original_input: str = "",
+        override_count: int | None = None,
     ) -> str | None:
         """Run the skills-based build pipeline.
 
@@ -309,17 +438,39 @@ class OpenAIPurpleAgent(AgentExecutor):
 
         Strategy:
         - Detect underspec BEFORE calling the LLM.
-        - If a color is missing (multi-color instruction with colorless phrases,
-          or a zero-color instruction) → ASK the green agent for the color.
+        - If both color and count are missing -> ASK a compound question
+          to get both in a single -5 cost round.
+        - If only color is missing -> ASK the green agent for the color.
         - When the answer arrives, the answered color is patched directly into
           the instruction text so the LLM receives a fully-specified prompt.
-        - NEVER ask about missing numbers — infer them from context.
+        - If only count is missing but color is known, ASK for the count.
+          Heuristic count inference is only 64.6% accurate; asking is +EV.
+        - Only one question per round.
         """
         try:
             # ── Step 1: Pre-LLM underspec check on the raw instruction ──
             heuristic_result = detect_underspec_heuristic(parsed.instruction_text)
             logger.info("Heuristic: %s", heuristic_result.details)
-            inferred_count = heuristic_result.inferred_count or 3
+            inferred_count = override_count or heuristic_result.inferred_count or 3
+
+            # ── Compound: both color and count missing ──
+            if (heuristic_result.has_missing_color
+                    and heuristic_result.has_missing_number
+                    and ctx_id not in self._asked):
+                self._pending[ctx_id] = {
+                    "parsed": parsed,
+                    "original_input": original_input,
+                    "inferred_count": inferred_count,
+                    "ask_type": "compound",
+                    "uncounted_color": heuristic_result.uncounted_color,
+                }
+                question = (
+                    heuristic_result.suggested_compound_question
+                    or "What color should the unspecified blocks be, "
+                       "and how many blocks should be in that stack?"
+                )
+                logger.info("Both color and count missing, compound ask: %s", question)
+                return f"[ASK];{question}"
 
             if heuristic_result.has_missing_color and ctx_id not in self._asked:
                 # Color is genuinely missing — ASK before calling the LLM.
@@ -329,12 +480,32 @@ class OpenAIPurpleAgent(AgentExecutor):
                     "parsed": parsed,
                     "original_input": original_input,
                     "inferred_count": inferred_count,
+                    "ask_type": "color",
                 }
                 question = (
                     heuristic_result.suggested_question
                     or "What color should the unspecified blocks be?"
                 )
                 logger.info("Missing color detected pre-LLM, asking: %s", question)
+                return f"[ASK];{question}"
+
+            # Count is missing but color is known — ASK for the count.
+            if (heuristic_result.has_missing_number
+                    and not heuristic_result.has_missing_color
+                    and ctx_id not in self._asked
+                    and override_count is None):
+                self._pending[ctx_id] = {
+                    "parsed": parsed,
+                    "original_input": original_input,
+                    "inferred_count": inferred_count,
+                    "ask_type": "count",
+                    "uncounted_color": heuristic_result.uncounted_color,
+                }
+                question = (
+                    heuristic_result.suggested_count_question
+                    or "How many blocks should be in the unspecified stack?"
+                )
+                logger.info("Missing count detected pre-LLM, asking: %s", question)
                 return f"[ASK];{question}"
 
             if heuristic_result.has_missing_color:

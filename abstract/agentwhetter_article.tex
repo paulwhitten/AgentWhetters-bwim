@@ -80,6 +80,24 @@ to a direct LLM call with a carefully engineered system prompt.
     chaining positional context across steps.  No LLM call is involved at this
     stage; all coordinate arithmetic is exact.
 
+    A key design choice is that the LLM planner operates in what is effectively
+    a two-dimensional problem space.  Each plan step specifies only a horizontal
+    position $(x, z)$ and an action type; the executor computes the vertical
+    coordinate automatically by scanning the column for existing blocks and
+    placing each new block at the next available height, much like dropping a
+    piece in Connect~4.  This means the language model never needs to perform
+    $y$-coordinate arithmetic (ground level at $y\!=\!50$, each block adding
+    $+100$) or track how many blocks already occupy a column.  In our initial
+    approach, the LLM was asked to produce the complete
+    \texttt{[BUILD];Color,x,y,z;\ldots} response directly, which required it
+    to enumerate every block's three-dimensional coordinates and to correctly
+    chain height calculations across multiple stacking operations.  That
+    approach suffered from frequent off-by-one $y$-errors, duplicate blocks at
+    the same position, and miscounted stack heights.  The current executor
+    eliminates these failure modes entirely by confining the LLM to the
+    two-dimensional layout it can reason about reliably and delegating all
+    vertical placement to deterministic code.
+
   \item \textbf{Response Formatter.} Translates the final grid state into the
     protocol-required \texttt{[BUILD]} format and validates the output before
     transmission.
@@ -99,16 +117,38 @@ block count.  Our agent employs a two-tiered detection strategy:
     0$).  A multi-color disambiguation loop handles instructions that leave
     multiple colors unspecified.
 
-  \item \textbf{Missing count.} Counts are never asked about; instead, the
-    executor infers them from adjacent stack heights, referenced structure
-    dimensions, or a default of three, matching the distribution observed in
-    the stimulus data.  The decision not to ask is grounded in expected value:
-    asking costs $-5$ and yields $+10$ for a net of $+5$, while guessing yields
-    $+10$ when correct and $-10$ when wrong, giving $\text{EV}_{\text{guess}} =
-    20p - 10$.  Guessing dominates asking whenever accuracy $p > 0.75$.  Because
-    the count heuristic draws on structurally correlated signals (e.g., matching
-    the height of an adjacent stack), its empirical accuracy comfortably exceeds
-    this threshold, making asking a net-negative strategy for counts.
+  \item \textbf{Missing count.} Empirical analysis of the stimulus data
+    revealed that heuristic count inference (copying an adjacent stack's height
+    or defaulting to three) achieves only ${\sim}65\%$ accuracy, well below
+    the $75\%$ threshold at which guessing dominates asking under the scoring
+    function.  At $p = 0.65$, $\text{EV}_{\text{guess}} = 20(0.65) - 10 =
+    +3.0$, while $\text{EV}_{\text{ask}} = +5.0$ per round, a gain of $+2.0$
+    per count-underspecified round.
+
+    A complication is that the architect answering questions is itself an LLM
+    (GPT-4o-mini) that receives only the target structure as coordinates, not
+    the original instruction.  When presented with a generic question such as
+    ``How many blocks should be in the unspecified stack?'' the architect
+    cannot determine which stack is being referenced and defaults to answering
+    ``3 blocks'' regardless of the true count, producing a 23\% error rate in
+    our experiments.  To address this, we generate \emph{color-specific}
+    questions that name the color of the uncounted phrase, for example ``How
+    many blue blocks should be in the blue stack?''  This allows the architect
+    to identify the correct stack by counting blocks of that color in its
+    coordinate data.  The answered count is then patched directly into the
+    instruction text before the LLM planner runs, so the planner receives a
+    fully specified instruction such as ``build a stack of 3 blue blocks''
+    rather than the ambiguous ``build a blue stack.''
+
+    Because only one question is permitted per round, the agent prioritizes
+    color over count.  When multiple phrases lack counts, the first uncounted
+    phrase with a known color is selected for the question and the remainder
+    fall back to heuristic inference.  The heuristic resolves unspecified
+    counts through a three-level cascade: first, it copies the height of an
+    adjacent stack at the target position; second, if no neighbor exists, it
+    uses the tallest stack currently on the grid; third, it defaults to three,
+    which matches the modal count in the stimulus data (53\% of
+    count-underspecified trials).
 \end{itemize}
 
 \section{Adaptive Prompt Enrichment}
@@ -151,10 +191,13 @@ fully-specified instructions.
 
 In local evaluation against the benchmark's 160-round scenario (combining
 rational and unreliable architect partners), the agent achieves approximately
-82\% structural accuracy with a net score of $+780$.  The primary remaining
-failure modes involve complex multi-step shapes (T-junctions, ``each end''
-expansions) and inherently ambiguous height specifications. These are areas
-where even frontier models show limited reliability without additional
-grounding.
+87\% structural accuracy (140 of 160 rounds correct) with a net score of
+$+720$.  Adding color-specific count questions raised accuracy from 82\% to
+87\%, a gain of 8 additional correct rounds per run, though the extra
+\texttt{[ASK]} cost reduced the raw score from $+780$ to $+720$.  The
+primary remaining failure modes involve complex multi-step shapes
+(T-junctions, ``each end'' expansions) and inherently ambiguous height
+specifications.  These are areas where even frontier models show limited
+reliability without additional grounding.
 
 \end{document}

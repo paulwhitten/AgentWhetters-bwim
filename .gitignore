@@ -9,4 +9,5 @@ __pycache__/
 .copilot-tracking/
 .github/
 temp/
+old_bwim
 dist/

@@ -1,0 +1,38 @@
+{
+  manifest_version: "0.1.0",
+  program: {
+    image: "ghcr.io/paulwhitten/agentwhetters-bwim-purple:latest",
+    entrypoint: [
+      "uv",
+      "run",
+      "pragmatic_builder/purple_openai/server.py",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8080"
+    ],
+    env: {
+      OPENAI_API_KEY: "${config.openai_api_key}",
+      LOG_LEVEL: "INFO"
+    },
+    network: {
+      endpoints: [
+        { name: "endpoint", port: 8080 }
+      ]
+    }
+  },
+  config_schema: {
+    type: "object",
+    properties: {
+      openai_api_key: { type: "string", secret: true }
+    },
+    required: ["openai_api_key"],
+    additionalProperties: false
+  },
+  provides: {
+    a2a: { kind: "a2a", endpoint: "endpoint" }
+  },
+  exports: {
+    a2a: "a2a"
+  }
+}
