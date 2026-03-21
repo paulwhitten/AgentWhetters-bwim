@@ -26,7 +26,7 @@
 \begin{abstract}
 We present \textbf{AgentWhetters BWIM}, a purple agent for the AgentBeats
 \emph{Build What I Mean} (BWIM) benchmark that constructs block structures on a
-$9\!\times\!5\!\times\!9$ grid from underspecified natural-language
+$9\!\times\!5\!\times\!9$ grid from sometimes underspecified natural-language
 instructions. The system originated as an investigation into enabling small,
 cost-efficient language models, originally targeting edge deployment with
 limited compute, to perform reliable 3D spatial reasoning.  It has since been
@@ -198,7 +198,8 @@ additional correct rounds per run, though the extra \texttt{[ASK]} cost
 reduced the raw score from $+780$ to $+720$.  The
 primary remaining failure modes involve complex multi-step shapes
 (T-junctions, ``each end'' expansions) and inherently ambiguous height
-specifications.  These are areas where even frontier models show limited
-reliability without additional grounding.
+specifications.  These are areas where likely even frontier models show limited
+reliability without additional grounding. However, limited budget constrains the
+extent of our testing.
 
 \end{document}
