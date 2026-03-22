@@ -287,6 +287,7 @@ class SpatialExecutor:
                 logger.warning("Stack at (%d,%d) reached max height, placed %d blocks", x, z, _)
                 break
             self.grid.add(Block(color=color, x=x, y=ny, z=z))
+            logger.info("  -> placed %s at (%d,%d,%d) [stack]", color, x, ny, z)
         self._record_step_position(x, z, color)
 
     def _handle_place(self, step: BuildStep) -> None:
@@ -297,6 +298,7 @@ class SpatialExecutor:
         if not self.grid.config.is_valid_position(x, ny, z):
             raise ExecutionError(f"Position ({x},{ny},{z}) is out of bounds")
         self.grid.add(Block(color=color, x=x, y=ny, z=z))
+        logger.info("  -> placed %s at (%d,%d,%d) [place]", color, x, ny, z)
         self._record_step_position(x, z, color)
 
     def _handle_place_relative(self, step: BuildStep) -> None:
@@ -310,6 +312,7 @@ class SpatialExecutor:
             if not self.grid.config.is_valid_position(x, ny, z):
                 raise ExecutionError(f"Position ({x},{ny},{z}) is out of bounds")
             self.grid.add(Block(color=color, x=x, y=ny, z=z))
+            logger.info("  -> placed %s at (%d,%d,%d) [place_relative]", color, x, ny, z)
         self._record_step_position(x, z, color)
 
     def _handle_extend_row(self, step: BuildStep) -> None:
@@ -333,11 +336,47 @@ class SpatialExecutor:
         except ValueError:
             raise ExecutionError(f"Unknown direction for extend_row: {dir_name}")
 
-        # When extending from a reference (e.g. "rightmost"), start placing
-        # blocks NEXT TO the reference rather than ON TOP of it.
+        # ── Start-position adjustment for extend_row ──
+        #
+        # The LLM frequently says "extend_row Green count=2 at (0,200)"
+        # when Green already exists at (0,200).  The intent is "extend
+        # FROM the existing block", not "place a new block on top of it".
+        #
+        # Without adjustment, next_y(0,200) returns y=150 (the stack slot
+        # above the existing block) and we get a vertical stack instead
+        # of a horizontal extension.  This was the root cause of the
+        # T-shape failure in run 184509 (round 1): the LLM produced a
+        # correct extend_row step but the executor stacked on top of the
+        # stem tip.
+        #
+        # Two cases:
+        #
+        # CASE 1  relative_to reference (for example "rightmost"):
+        #   Always advance one step in the direction.  The reference IS
+        #   the existing block; placing NEXT TO it is the obvious intent.
+        #
+        # CASE 2  absolute coordinates with same-color overlap:
+        #   Advance one step ONLY when the start position already has a
+        #   block of the SAME COLOR as the extend_row.  Different-color
+        #   overlap (for example Blue extend starting on a Red position)
+        #   is left alone because the LLM may genuinely want to start
+        #   a new row at that coordinate, stacking on top of the other
+        #   color.  See test_extend_row which extends Blue from a Red
+        #   position and expects Blue blocks starting AT that position.
+        #
         if "relative_to" in pos:
             start_x += dx
             start_z += dz
+        else:
+            existing = [b for b in self.grid.blocks
+                        if b.x == start_x and b.z == start_z]
+            if existing and any(b.color == color for b in existing):
+                logger.info(
+                    "extend_row: start (%d,%d) already has %s, advancing one step %s",
+                    start_x, start_z, color, dir_name,
+                )
+                start_x += dx
+                start_z += dz
 
         cx, cz = start_x, start_z
         for i in range(count):
@@ -349,6 +388,7 @@ class SpatialExecutor:
                 logger.warning("extend_row hit grid boundary at (%d,%d)", cx, cz)
                 break
             self.grid.add(Block(color=color, x=cx, y=ny, z=cz))
+            logger.info("  -> placed %s at (%d,%d,%d) [extend_row]", color, cx, ny, cz)
         # Record the last block position in the row
         self._record_step_position(cx, cz, color)
 

@@ -387,8 +387,20 @@ def auto_fix_direction(
 ) -> list[BuildStep]:
     """Automatically fix direction errors in extend_row steps.
 
-    This is a deterministic correction — if the instruction says "going
-    left" and the plan says "right", just flip it. No LLM needed.
+    This is a deterministic correction: if the instruction says "going
+    left" and the plan says "right", just flip it.  No LLM needed.
+
+    BUG ADDRESSED (run 002439, rounds with L-shape or row extensions):
+    gpt-4o-mini frequently reverses left/right in extend_row steps.
+    The instruction text is ground truth, so we regex-match direction
+    words from the instruction and override the plan when they conflict.
+
+    Only fires when the instruction contains EXACTLY ONE of left/right.
+    If both appear (for example "to the right of the left block") we
+    cannot safely pick one, so we leave the plan unchanged.
+
+    Called in the pipeline AFTER patch_chain_references and BEFORE
+    auto_fix_each_end_caps.
     """
     has_left = bool(_LEFT_WORDS.search(instruction))
     has_right = bool(_RIGHT_WORDS.search(instruction))
@@ -437,14 +449,29 @@ def auto_fix_each_end_caps(
 ) -> list[BuildStep]:
     """Fix 'each end' cap positions after extend_row steps.
 
-    Common LLM error: after extending a row, the model places caps at the
-    OLD endpoint instead of the NEW endpoint of the extended row.
+    BUG ADDRESSED (run 002439, "each end" / "both ends" rounds):
+    When the instruction says "stack on each end", the LLM places caps
+    at the OLD row endpoints.  After an extend_row the row is longer,
+    so one cap should be at the NEW endpoint, not the old one.
 
-    Detects the pattern and corrects cap coordinates to match the actual
-    row extent after extension. Fully deterministic, no LLM needed.
+    EXAMPLE:
+      Instruction: "Extend the red row by 2 blocks to the right,
+                     then stack 1 blue on each end."
+      Start grid:   Red at x=-100, 0, 100  (row along x)
+      LLM plan:     extend_row Red count=2 dir=right (new end x=300)
+                    stack Blue at x=-100   (left end -- correct)
+                    stack Blue at x=100    (old right end -- WRONG)
+      Fixed:        stack Blue at x=300    (new right end -- correct)
 
-    Falls back to parsing extension details from the instruction text
-    when no extend_row step is found in the plan.
+    MECHANISM:
+    1. Bail out if instruction lacks "each end" / "both ends".
+    2. Find the extend_row step (or parse direction/count from the
+       instruction text as a fallback when the LLM used place instead).
+    3. Compute old endpoint and new endpoint from the start grid.
+    4. Scan subsequent stack/place steps; any that sit on the old
+       endpoint (which is now interior) get relocated to the new end.
+
+    Fully deterministic, no LLM needed.  Called AFTER auto_fix_direction.
     """
     if not _EACH_END_PATTERN.search(instruction):
         return steps
@@ -640,23 +667,53 @@ def auto_fix_t_shape_extend(
     steps: list[BuildStep],
     start_grid: Grid,
 ) -> list[BuildStep]:
-    """Fix extend_row direction for T-shape extensions.
+    """Fix extend_row direction and action for T-shape extensions.
 
-    The LLM frequently generates direction="on_top" for T-shape stem
-    extensions, which crashes the executor. This function:
-    1. Detects T-shape instructions
-    2. Uses the structure analyzer to identify the T-shape parts
-    3. Computes the correct stem extension direction from the geometry
-    4. Fixes any extend_row step with wrong direction
+    BUG ADDRESSED (runs 013543-014444, 4 rounds each worth -10 = -40 pts):
+    When instructed to "extend the longer base" of a T-shape, gpt-4o-mini
+    makes two distinct errors:
 
-    Fully deterministic, no LLM needed.
+      ERROR A  direction="on_top" or wrong axis direction.
+        The stem runs along the z-axis but the LLM writes direction="on_top"
+        or direction="right".  The executor then stacks vertically or extends
+        along the wrong axis.
+
+      ERROR B  action="stack" instead of "extend_row" at/near the stem tip.
+        Instead of extend_row, the LLM emits a stack step at the stem tip
+        coordinates.  The executor stacks vertically on top of the tip block
+        rather than extending the stem outward.
+
+    MECHANISM:
+    1. Bail out unless the instruction mentions both "t-shape" and "extend".
+    2. Run the structure analyzer to identify crossbar, stem, and junction.
+    3. Determine which segment to extend ("longer base" maps to the longer
+       of crossbar vs stem; default is stem).
+    4. Compute the correct extension direction from geometry:
+       - Find the junction (shared position between crossbar and stem).
+       - The "base" is the segment endpoint farthest from the junction.
+       - The extension direction points away from the junction past the base.
+    5. If there IS an extend_row step, fix its direction and start position.
+    6. If there is NO extend_row step (Error B), search for a stack/place
+       step at the stem tip or one grid step past it.  Convert it to
+       extend_row with the computed direction and a start position one step
+       past the base.
+
+    NOTE on interaction with executor's same-color skip-forward logic:
+    If the LLM emits extend_row starting AT the existing stem tip (for example
+    extend_row Green count=2 at (0,200) when Green already occupies (0,200)),
+    the executor's _handle_extend_row detects the same-color overlap and
+    advances the start by one grid step before placing.  That means blocks
+    land at z=300 and z=400 rather than stacking at z=200.  See the detailed
+    comment in spatial_executor.py _handle_extend_row.
+
+    Fully deterministic, no LLM needed.  Called AFTER auto_fix_each_end_caps.
     """
     if not _T_SHAPE_PATTERN.search(instruction):
         return steps
     if not _EXTEND_PATTERN.search(instruction):
         return steps
 
-    # Find extend_row step
+    # Find extend_row step — or a stack/place at the stem tip (fallback)
     extend_step = None
     extend_idx = None
     for i, step in enumerate(steps):
@@ -665,10 +722,7 @@ def auto_fix_t_shape_extend(
             extend_idx = i
             break
 
-    if extend_step is None:
-        return steps
-
-    # Analyze the starting structure
+    # Analyze the starting structure (needed for both paths)
     analysis = analyze_structure(start_grid)
 
     # Find the T-shape
@@ -724,6 +778,68 @@ def auto_fix_t_shape_extend(
         increasing = base[1] > junction[1]
 
     correct_direction = _DIRECTION_MAP[(axis, increasing)]
+
+    # ── FALLBACK PATH (Error B): no extend_row step found ──
+    #
+    # The LLM produced stack/place at the stem tip instead of extend_row.
+    # We search for any stack/place/place_relative whose (x,z) matches
+    # either the base (stem tip) or one grid step past it in the correct
+    # extension direction.  When found we rewrite it to extend_row with:
+    #   - action = "extend_row"
+    #   - direction = the computed correct_direction
+    #   - start position = one grid step past the base
+    #
+    # Only the FIRST matching step is converted (we break after it).
+    # If the LLM produced multiple stack steps at the tip, only one gets
+    # fixed.  That is acceptable because the remaining step(s) will stack
+    # on a now-empty position (the tip is still occupied by the original
+    # structure, so the stack increments y, producing a visible error that
+    # the verifier catches on re-plan).  In practice gpt-4o-mini produces
+    # a SINGLE stack step with count >= 2 for T-shape extending.
+    if extend_step is None:
+        grid_step = start_grid.config.grid_step
+        base_x, base_z = base[0], base[1]
+        for i, step in enumerate(steps):
+            if step.action not in ("stack", "place", "place_relative"):
+                continue
+            sx = step.position.get("x")
+            sz = step.position.get("z")
+            if sx is None or sz is None:
+                continue
+            try:
+                sx, sz = int(sx), int(sz)
+            except (ValueError, TypeError):
+                continue
+            # Match if the step is at the base (stem tip) or one step
+            # past the base in the correct extension direction
+            at_base = (sx == base_x and sz == base_z)
+            one_past = False
+            if axis == "x":
+                one_past = (sz == base_z and sx == base_x + (grid_step if increasing else -grid_step))
+            else:
+                one_past = (sx == base_x and sz == base_z + (grid_step if increasing else -grid_step))
+
+            if at_base or one_past:
+                logger.info(
+                    "Auto-fixing T-shape: converting %s at (%d,%d) → "
+                    "extend_row direction='%s' (stem tip fallback)",
+                    step.action, sx, sz, correct_direction,
+                )
+                step.action = "extend_row"
+                step.position["direction"] = correct_direction
+                # Start position: one step past the base
+                if axis == "x":
+                    step.position["x"] = base_x + (grid_step if increasing else -grid_step)
+                    step.position["z"] = base_z
+                else:
+                    step.position["x"] = base_x
+                    step.position["z"] = base_z + (grid_step if increasing else -grid_step)
+                extend_step = step
+                extend_idx = i
+                break
+
+        if extend_step is None:
+            return steps
 
     # Check current direction
     current_dir = extend_step.position.get("direction", "").lower()

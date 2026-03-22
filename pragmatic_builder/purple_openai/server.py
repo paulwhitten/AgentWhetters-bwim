@@ -95,7 +95,7 @@ def prepare_agent_card(url: str) -> AgentCard:
         examples=[],
     )
     return AgentCard(
-        name="AgentWhetters_Purple_BWIM",
+        name="AgentWhetters_BWIM",
         description="Spatial reasoning agent from AgentWhetters, powered by gpt-4o-mini.",
         url=url,
         version="1.0.0",
@@ -612,6 +612,11 @@ class OpenAIPurpleAgent(AgentExecutor):
                 ):
                     logger.info("Resolving Uncounted -> %d", inferred_count)
                     step.count = inferred_count
+
+            # ── Log steps after all fixes (pre-execution) ──
+            logger.info("Final steps after all fixes (%d total):", len(steps))
+            for i, s in enumerate(steps):
+                logger.info("  Final step %d: %s %s count=%s pos=%s", i+1, s.action, s.color, s.count, s.position)
 
             # ── Step 5: Execute steps deterministically ──
             exec_grid = Grid.from_str(parsed.start_grid.to_str(), config=self._config)

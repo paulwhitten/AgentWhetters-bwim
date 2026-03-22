@@ -1233,7 +1233,7 @@ class TestAutoFixTShapeExtend:
         assert int(fixed[0].position["x"]) == -400  # past base x=-300
 
     def test_no_extend_step_returns_unchanged(self):
-        """If no extend_row step, nothing changes."""
+        """If no extend_row step and instruction lacks 'extend', nothing changes."""
         instruction = "Keeping the T shape, add blocks."
         grid = self._make_grid(
             "Green,-100,50,-100;Green,0,50,-100;Green,100,50,-100;"
@@ -1244,3 +1244,64 @@ class TestAutoFixTShapeExtend:
         ]
         fixed = auto_fix_t_shape_extend(instruction, steps, grid)
         assert fixed[0].action == "place"
+
+    def test_stack_at_stem_tip_converted_to_extend_row(self):
+        """LLM produces stack at stem tip instead of extend_row — fallback converts it."""
+        instruction = "Keeping the T shape, extend the existing green structure by adding two green blocks to the longer base. Then add one purple block to each arm."
+        grid = self._make_grid(
+            "Green,-100,50,-100;Green,0,50,-100;Green,100,50,-100;"
+            "Green,0,50,0;Green,0,50,100;Green,0,50,200"
+        )
+        steps = [
+            self._make_step("stack", "Green", 2, {"x": 0, "z": 200}),
+            self._make_step("place", "Purple", 1, {"x": -200, "z": -100}),
+            self._make_step("place", "Purple", 1, {"x": 200, "z": -100}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].action == "extend_row"
+        assert fixed[0].position["direction"] == "front"
+        assert int(fixed[0].position["x"]) == 0
+        assert int(fixed[0].position["z"]) == 300
+
+    def test_stack_at_stem_tip_with_on_top_converted(self):
+        """Stack at stem tip with direction=on_top also gets converted."""
+        instruction = "Keeping the T shape, extend the green structure by two blocks."
+        grid = self._make_grid(
+            "Green,-100,50,-100;Green,0,50,-100;Green,100,50,-100;"
+            "Green,0,50,0;Green,0,50,100;Green,0,50,200"
+        )
+        steps = [
+            self._make_step("stack", "Green", 2, {"x": 0, "z": 200, "direction": "on_top"}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].action == "extend_row"
+        assert fixed[0].position["direction"] == "front"
+        assert int(fixed[0].position["z"]) == 300
+
+    def test_stack_one_past_stem_tip_converted(self):
+        """Stack one step past stem tip also gets caught by fallback."""
+        instruction = "Keeping the T shape, extend by two blocks to the longer base."
+        grid = self._make_grid(
+            "Green,-100,50,-100;Green,0,50,-100;Green,100,50,-100;"
+            "Green,0,50,0;Green,0,50,100;Green,0,50,200"
+        )
+        steps = [
+            self._make_step("stack", "Green", 2, {"x": 0, "z": 300}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].action == "extend_row"
+        assert fixed[0].position["direction"] == "front"
+        assert int(fixed[0].position["z"]) == 300
+
+    def test_stack_at_unrelated_position_not_converted(self):
+        """Stack away from stem tip should NOT be converted."""
+        instruction = "Keeping the T shape, extend by two blocks."
+        grid = self._make_grid(
+            "Green,-100,50,-100;Green,0,50,-100;Green,100,50,-100;"
+            "Green,0,50,0;Green,0,50,100;Green,0,50,200"
+        )
+        steps = [
+            self._make_step("stack", "Green", 2, {"x": 300, "z": 0}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].action == "stack"  # not converted

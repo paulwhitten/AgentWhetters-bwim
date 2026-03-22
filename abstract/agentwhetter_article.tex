@@ -97,7 +97,12 @@ to a direct LLM call with a carefully engineered system prompt.
     step on an in-memory grid model, resolving relative references
     (``leftmost,'' ``the red one''), computing gravity-based y-coordinates, and
     chaining positional context across steps.  No LLM call is involved at this
-    stage; all coordinate arithmetic is exact.
+    stage; all coordinate arithmetic is exact.  A same-color skip-forward rule
+    in the \texttt{extend\_row} handler detects when the specified start
+    position is already occupied by a block of the same color and advances the
+    start by one grid step in the extension direction before placing.  This
+    prevents vertical stacking when the LLM intends horizontal extension from
+    an existing block.
 
     A key design choice is that the LLM planner operates in what is effectively
     a two-dimensional problem space.  Each plan step specifies only a horizontal
@@ -220,8 +225,8 @@ individual test item than the test items share with each other.
 Table~\ref{tab:results} summarizes representative runs across development
 iterations. In local evaluation against the benchmark's 160-round scenario
 (combining rational and unreliable architect partners), the agent's best run
-achieves 91.9\% structural accuracy (147 of 160 rounds correct) with a
-cumulative score of $+860$.
+achieves 95.6\% structural accuracy (153 of 160 rounds correct) with a
+cumulative score of $+980$.
 
 \begin{table}[h]
 \centering
@@ -236,6 +241,7 @@ Baseline   & No count-ask        & $+780$ & 81.9\% & --  & --  \\
 +Enrichment & Prompt enrichment   & $+780$ & 88.1\% & 0/4 & 1/4 \\
 +Each-end fix & Deterministic cap fix & $+820$ & 89.4\% & 1/4 & 4/4 \\
 +Example rewrite & Decontaminated examples & $+860$ & 91.9\% & 2/4 & 2/4 \\
++Extend skip & Executor same-color fix & $+980$ & 95.6\% & 4/4 & 4/4 \\
 \hline
 \end{tabular}
 \caption{Score progression across development iterations (160 rounds each).}
@@ -253,17 +259,25 @@ misidentified one) addresses 6 additional failure rounds in testing.
 Rewriting few-shot examples to avoid stimulus contamination and adding a
 fallback each-end correction path brought the overall accuracy to 91.9\%.
 
-The 13 remaining failures in the best run fall into three broad categories.
-First, 4 rounds where existing deterministic fixes (T-shape extension,
-each-end caps) did not trigger because the LLM produced step formats the
-pattern matchers did not expect. Second, 3 rounds of L-shape errors where
-the LLM stacks blocks vertically instead of extending a row horizontally.
-Third, 4 rounds of spatial or color errors, including green agent responses
-with wrong colors (2 rounds) and axis confusion on spatial instructions
-(2 rounds).
-The first category is addressable with broader pattern matching. The
-remaining categories involve LLM spatial reasoning limits or green agent
-non-determinism that are harder to correct without model upgrades or
-additional grounding signals. Budget constraints limit further testing.
+The final improvement, a same-color skip-forward rule in the spatial
+executor, corrected a class of failures where \texttt{extend\_row} stacked
+vertically on an existing block of the same color instead of extending
+horizontally past it. This fix raised the score from $+860$ to $+980$ and
+moved both T-shape (2/4 to 4/4) and each-end (2/4 to 4/4) sub-tasks to
+perfect accuracy.
+
+The 7 remaining failures in the best run fall into two categories.
+First, 5 rounds where the green agent (architect) provided incorrect color
+or count information in its instruction, for example naming a block color as
+Green when the target structure contained Blue, or reporting 4 blocks as the
+count for a stack that should have 3. These errors originate in the architect
+LLM and cannot be corrected by the builder agent. Second, 2 rounds of LLM
+spatial reasoning errors: one incorrect chain coordinate reference and one
+L-shape with combined wrong-color and vertical stacking.
+
+The dominant remaining error source is therefore the green agent, not the
+purple agent's pipeline. Further accuracy gains would require either
+architect-side improvements or cross-validation heuristics to detect
+and compensate for architect errors.
 
 \end{document}
