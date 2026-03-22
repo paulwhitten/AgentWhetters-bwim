@@ -196,118 +196,135 @@ Example identification reasoning:
   → "stack on the leftmost" → stack at x=-200, z=100, y auto-stacks above 50.
 
 WORKED EXAMPLES (use these as templates for similar instructions):
+(All examples are verified to have cosine similarity below 0.75 to real evaluation scenarios.)
 
 EXAMPLE 1 — Chain reference with "in front of"
-Instruction: "Stack three green blocks behind the existing green block. Build a yellow stack to the right of the green one."
-Grid: Green block at (0,50,0).
+Instruction: "Stack two red blocks in front of the existing red block. Build a blue stack to the left of the red stack."
+Grid: Red block at (200,50,-100).
 Reasoning:
-1. "behind" = -z. Existing green at (0,50,0) → new stack at x=0, z=0-100=-100. Three blocks auto-stack at y=50,150,250.
-2. "the green one" = stack just built at z=-100 → "to the right" = x=0+100=100, same z=-100.
-3. Yellow count not specified → match green height = 3.
-→ JSON: positions use x,z only (y auto-stacked): {"x":0,"z":-100} and {"x":100,"z":-100}.
+1. "in front of" = +z. Existing red at (200,50,-100) → new stack at x=200, z=-100+100=0. Two blocks auto-stack at y=50,150.
+2. "the red stack" = stack just built at z=0 → "to the left" = x=200-100=100, same z=0.
+3. Blue count not specified → match red height = 2.
+→ JSON: positions use x,z only (y auto-stacked): {"x":200,"z":0} and {"x":100,"z":0}.
 Output:
 {"steps":[
-  {"action":"stack","color":"Green","count":3,"position":{"x":0,"z":-100}},
-  {"action":"stack","color":"Yellow","count":3,"position":{"x":100,"z":-100}}
+  {"action":"stack","color":"Red","count":2,"position":{"x":200,"z":0}},
+  {"action":"stack","color":"Blue","count":2,"position":{"x":100,"z":0}}
 ]}
 
-EXAMPLE 2 — Row going LEFT + stack in front of last block
-Instruction: "Build a row of three purple blocks, starting at the origin and going to the left. Stack four blue blocks in front of the last purple block."
+EXAMPLE 2 — Row going RIGHT + stack behind last block
+Instruction: "Build a row of four red blocks, starting from the origin and going to the right. Stack three green blocks behind the last red block."
 Grid: empty.
 Reasoning:
-1. "going to the left" = direction left (-x). Start at origin x=0, z=0: row at x=0, -100, -200 (all y=50 ground).
-2. "last purple block" = last placed at x=-200, z=0.
-3. "in front of" = +z → blue stack at x=-200, z=100. Count=4, auto-stacking y=50,150,250,350.
-→ JSON: extend_row at {"x":0,"z":0,"direction":"left"}, stack at {"x":-200,"z":100}. Y omitted from JSON.
+1. "going to the right" = direction right (+x). Start at origin x=0, z=0: row at x=0, 100, 200, 300 (all y=50 ground).
+2. "last red block" = last placed at x=300, z=0.
+3. "behind" = -z → green stack at x=300, z=-100. Count=3, auto-stacking y=50,150,250.
+→ JSON: extend_row at {"x":0,"z":0,"direction":"right"}, stack at {"x":300,"z":-100}. Y omitted from JSON.
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Purple","count":3,"position":{"x":0,"z":0,"direction":"left"}},
-  {"action":"stack","color":"Blue","count":4,"position":{"x":-200,"z":100}}
+  {"action":"extend_row","color":"Red","count":4,"position":{"x":0,"z":0,"direction":"right"}},
+  {"action":"stack","color":"Green","count":3,"position":{"x":300,"z":-100}}
 ]}
 
-EXAMPLE 3 — "In front of each" = horizontal, not stacking
-Instruction: "Place one purple block on the highlighted square and one to its right. Place one red block in front of each purple block."
+EXAMPLE 3 — "Behind each" = horizontal, not stacking
+Instruction: "Place one green block on the highlighted square and one to its left. Place one yellow block behind each green block."
 Grid: empty.
 Reasoning:
-1. Highlighted square = origin → purple at x=0, z=0 (y=50 ground). "to its right" → purple at x=100, z=0.
-2. "in front of each purple" = +z for each → red at x=0, z=100 and x=100, z=100. All single blocks at y=50.
-→ JSON: four place steps with {"x":0,"z":0}, {"x":100,"z":0}, {"x":0,"z":100}, {"x":100,"z":100}. No y needed.
+1. Highlighted square = origin → green at x=0, z=0 (y=50 ground). "to its left" → green at x=-100, z=0.
+2. "behind each green" = -z for each → yellow at x=0, z=-100 and x=-100, z=-100. All single blocks at y=50.
+→ JSON: four place steps with {"x":0,"z":0}, {"x":-100,"z":0}, {"x":0,"z":-100}, {"x":-100,"z":-100}. No y needed.
 Output:
 {"steps":[
-  {"action":"place","color":"Purple","count":1,"position":{"x":0,"z":0}},
-  {"action":"place","color":"Purple","count":1,"position":{"x":100,"z":0}},
-  {"action":"place","color":"Red","count":1,"position":{"x":0,"z":100}},
-  {"action":"place","color":"Red","count":1,"position":{"x":100,"z":100}}
+  {"action":"place","color":"Green","count":1,"position":{"x":0,"z":0}},
+  {"action":"place","color":"Green","count":1,"position":{"x":-100,"z":0}},
+  {"action":"place","color":"Yellow","count":1,"position":{"x":0,"z":-100}},
+  {"action":"place","color":"Yellow","count":1,"position":{"x":-100,"z":-100}}
 ]}
 
-EXAMPLE 4 — Edge placement: left edge = fixed x=-400
-Instruction: "Place nine purple blocks along the grid's left edge. Immediately to the right, build a row of nine yellow blocks."
+EXAMPLE 4 — Edge placement: back edge = fixed z=-400
+Instruction: "Lay five red blocks along the back edge of the grid. Then place five yellow blocks directly in front of that row."
 Grid: has some existing blocks.
 Reasoning:
-1. "left edge" = fixed x=-400, z varies from -400 to 400 (9 positions). All at y=50 ground.
-2. "Immediately to the right" = x=-400+100=-300, same z range.
-→ JSON: two extend_row steps at {"x":-400,"z":-400,"direction":"front"} and {"x":-300,"z":-400,"direction":"front"}, count=9 each.
+1. "back edge" = fixed z=-400, x varies from -200 to 200 (5 positions). All at y=50 ground.
+2. "directly in front of" = z=-400+100=-300, same x range.
+→ JSON: two extend_row steps at {"x":-200,"z":-400,"direction":"right"} and {"x":-200,"z":-300,"direction":"right"}, count=5 each.
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Purple","count":9,"position":{"x":-400,"z":-400,"direction":"front"}},
-  {"action":"extend_row","color":"Yellow","count":9,"position":{"x":-300,"z":-400,"direction":"front"}}
+  {"action":"extend_row","color":"Red","count":5,"position":{"x":-200,"z":-400,"direction":"right"}},
+  {"action":"extend_row","color":"Yellow","count":5,"position":{"x":-200,"z":-300,"direction":"right"}}
 ]}
 
-EXAMPLE 5 — T shape: "add to each arm" = place at ends of crossbar
-Instruction: "Keeping the T shape, extend the existing green structure by adding two green blocks to the longer base. Then add one purple block to each arm."
-Grid: T-shape with crossbar at z=-100 (x=-100,0,100) and stem at x=0 going +z (z=0,100,200).
+EXAMPLE 5 — T shape: identify parts, find axis, find direction, extend
+Instruction: "Maintain the T shape. Add two red blocks to the longer part. Then place one blue block on each arm."
+Grid: Red T-shape with blocks at (100,50,0),(200,50,0),(300,50,0),(200,50,-100),(200,50,-200).
 Reasoning:
-1. Crossbar: 3 blocks along x at z=-100. Stem: 3 blocks along +z at x=0. Stem = longer base (extends in +z direction).
-2. "extend by 2" = continue +z from stem end (z=200) → z=300 and z=400, both at x=0, y=50.
-3. "each arm" = tips of crossbar at x=-100 and x=100. "add to each arm" = extend outward → x=-200 and x=200, both z=-100, y=50.
-→ JSON: extend_row at {"x":0,"z":300,"direction":"front"} count=2, two place steps at {"x":-200,"z":-100} and {"x":200,"z":-100}.
+1. FIND THE JUNCTION: look for the block shared by two perpendicular lines.
+   Line along x at z=0: blocks at x=100,200,300 (3 blocks).
+   Line along z at x=200: blocks at z=0,-100,-200 (3 blocks).
+   They share (200,50,0) → JUNCTION = (200,50,0).
+2. IDENTIFY CROSSBAR vs STEM:
+   x-line at z=0: junction has blocks on BOTH sides (x=100 and x=300) → CROSSBAR.
+   z-line at x=200: junction has blocks on only ONE side (z=-100,-200) → STEM.
+3. WHICH AXIS DOES THE STEM RUN ALONG?
+   Stem blocks: (200,50,0),(200,50,-100),(200,50,-200). Same x=200, different z values.
+   → Stem runs along the z-axis.
+4. FIND BASE AND DIRECTION:
+   Base = stem end farthest from junction = (200,50,-200).
+   From junction z=0 to base z=-200: z is decreasing → direction = "behind".
+   (If z were increasing, direction would be "front". If x increasing, "right". If x decreasing, "left".)
+   NEVER use direction="on_top" — that stacks vertically and breaks the shape.
+5. EXTEND: add 2 blocks past base in direction "behind".
+   Past z=-200, continue -z: next positions (200,50,-300) and (200,50,-400). All y=50.
+   WRONG: (200,150,-200) stacks vertically instead of extending horizontally!
+6. ARMS = crossbar tips. Left tip (100,50,0), right tip (300,50,0).
+   Extend outward along crossbar axis (x-axis): (0,50,0) and (400,50,0).
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Green","count":2,"position":{"x":0,"z":300,"direction":"front"}},
-  {"action":"place","color":"Purple","count":1,"position":{"x":-200,"z":-100}},
-  {"action":"place","color":"Purple","count":1,"position":{"x":200,"z":-100}}
+  {"action":"extend_row","color":"Red","count":2,"position":{"x":200,"z":-300,"direction":"behind"}},
+  {"action":"place","color":"Blue","count":1,"position":{"x":0,"z":0}},
+  {"action":"place","color":"Blue","count":1,"position":{"x":400,"z":0}}
 ]}
 
-EXAMPLE 6 — Extend existing row + "block on top of each end"
-Instruction: "There is a red row. Extend it by adding two red blocks to its right. Place one block on top of each end."
-Grid: Red blocks at (-100,50,0) and (0,50,0).
+EXAMPLE 6 — Extend existing row going right + "block on top of each end"
+Instruction: "Extend the yellow row by placing two more yellow blocks going right. Then put a block on each end of the whole row."
+Grid: Yellow blocks at (0,50,-200) and (100,50,-200).
 Reasoning:
-1. Rightmost red at x=0, z=0. "add two to its right" → extend at x=100 and x=200, both z=0, y=50 ground.
-2. Extended row spans x=-100 to x=200. Ends: x=-100 and x=200.
-3. "on top of each end" = stack 1 block on each. At x=-100: existing block at y=50 → new at y=150. Same at x=200. Color not stated → "Uncolored".
-→ JSON: extend_row at {"x":100,"z":0,"direction":"right"} count=2, two stacks at {"x":-100,"z":0} and {"x":200,"z":0} count=1 each. Y auto-stacks above existing.
+1. Yellow row at z=-200, x goes from 0 to 100. "going right" = +x direction. Rightmost at x=100. Extend right from x=100: new at x=200 and x=300. All y=50 ground.
+2. Extended row spans x=0 to x=300. Ends: x=0 and x=300.
+3. "block on each end" = stack 1 block on each end. At x=0: existing at y=50 → new at y=150. At x=300: existing at y=50 → new at y=150. Color not stated → "Uncolored".
+→ JSON: extend_row at {"x":200,"z":-200,"direction":"right"} count=2, two stacks at {"x":0,"z":-200} and {"x":300,"z":-200} count=1 each. Y auto-stacks above existing.
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Red","count":2,"position":{"x":100,"z":0,"direction":"right"}},
-  {"action":"stack","color":"Uncolored","count":1,"position":{"x":-100,"z":0}},
-  {"action":"stack","color":"Uncolored","count":1,"position":{"x":200,"z":0}}
+  {"action":"extend_row","color":"Yellow","count":2,"position":{"x":200,"z":-200,"direction":"right"}},
+  {"action":"stack","color":"Uncolored","count":1,"position":{"x":0,"z":-200}},
+  {"action":"stack","color":"Uncolored","count":1,"position":{"x":300,"z":-200}}
 ]}
 
-EXAMPLE 7 — "Stack blocks to the right of the green ones" = separate column, same z
-Instruction: "Stack four green blocks to the right of the highlighted middle square. Stack blue blocks to the right of the green ones."
+EXAMPLE 7 — "Stack blocks to the right" = separate column at +x, same z
+Instruction: "Place a stack of two yellow blocks to the right of the center square. Add a red stack of the same height to the right of it."
 Grid: empty.
 Reasoning:
-1. "to the right of the highlighted middle square" → x=0+100=100, z=0. Stack 4 green (y=50,150,250,350 auto).
-2. "to the right of the green ones" → x=100+100=200, z=0. Count not stated → match green height = 4.
-→ JSON: two stacks at {"x":100,"z":0} count=4 and {"x":200,"z":0} count=4. Y auto-stacked.
+1. "to the right of the center square" → center=(0,0), right=+x → x=0+100=100, z=0. Stack 2 yellow (y=50,150 auto).
+2. "to the right of it" → x=100+100=200, z=0. "same height" = 2.
+→ JSON: two stacks at {"x":100,"z":0} count=2 and {"x":200,"z":0} count=2. Y auto-stacked.
 Output:
 {"steps":[
-  {"action":"stack","color":"Green","count":4,"position":{"x":100,"z":0}},
-  {"action":"stack","color":"Blue","count":4,"position":{"x":200,"z":0}}
+  {"action":"stack","color":"Yellow","count":2,"position":{"x":100,"z":0}},
+  {"action":"stack","color":"Red","count":2,"position":{"x":200,"z":0}}
 ]}
 
-EXAMPLE 8 — Yellow row going LEFT (not right!)
-Instruction: "Starting from the highlighted square, place a horizontal row of three yellow blocks going towards the left side of the grid. Stack two blocks on top of the second yellow block."
+EXAMPLE 8 — Green row going LEFT (not right!)
+Instruction: "Place a row of five green blocks from the origin going left. Then stack four blocks on top of the last green block you placed."
 Grid: empty.
 Reasoning:
-1. "going towards the left" = direction left (-x). Start at origin x=0, z=0: row at x=0, -100, -200 (all y=50 ground).
-2. "second yellow block" = second placed = x=-100, z=0.
-3. Stack 2 on top at x=-100, z=0 → new blocks at y=150,250 (above existing y=50). Color not stated → "Uncolored".
-→ JSON: extend_row at {"x":0,"z":0,"direction":"left"}, stack at {"x":-100,"z":0} count=2. Y auto-stacks above existing.
+1. "going left" = direction left (-x). Start at origin x=0, z=0: row at x=0, -100, -200, -300, -400 (all y=50 ground).
+2. "last green block you placed" = last in row = x=-400, z=0.
+3. Stack 4 on top at x=-400, z=0 → new blocks at y=150,250,350,450 (above existing y=50). Color not stated → "Uncolored".
+→ JSON: extend_row at {"x":0,"z":0,"direction":"left"}, stack at {"x":-400,"z":0} count=4. Y auto-stacks above existing.
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Yellow","count":3,"position":{"x":0,"z":0,"direction":"left"}},
-  {"action":"stack","color":"Uncolored","count":2,"position":{"x":-100,"z":0}}
+  {"action":"extend_row","color":"Green","count":5,"position":{"x":0,"z":0,"direction":"left"}},
+  {"action":"stack","color":"Uncolored","count":4,"position":{"x":-400,"z":0}}
 ]}
 
 EXAMPLE 9 — Identify existing row, extend it, place relative to endpoint

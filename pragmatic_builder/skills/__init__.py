@@ -10,7 +10,7 @@ from .build_planner import BuildPlanner, BuildStep
 from .spatial_executor import SpatialExecutor
 from .response_formatter import format_build_response, validate_build_response
 from .structure_analyzer import analyze_structure, StructureAnalysis
-from .plan_verifier import verify_plan, auto_fix_direction
+from .plan_verifier import verify_plan, auto_fix_direction, auto_fix_each_end_caps, auto_fix_t_shape_extend
 from .plan_patcher import patch_chain_references
 from .underspec_detector import (
     detect_underspec_heuristic,
@@ -35,6 +35,8 @@ __all__ = [
     "StructureAnalysis",
     "verify_plan",
     "auto_fix_direction",
+    "auto_fix_each_end_caps",
+    "auto_fix_t_shape_extend",
     "patch_chain_references",
     "detect_underspec_heuristic",
     "detect_underspec_from_plan",

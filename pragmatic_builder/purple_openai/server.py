@@ -23,7 +23,7 @@ from skills.underspec_detector import detect_underspec_heuristic, patch_instruct
 from skills.response_formatter import format_build_response, validate_build_response
 from skills.grid import Grid, GridConfig
 from skills.structure_analyzer import analyze_structure
-from skills.plan_verifier import verify_plan, auto_fix_direction
+from skills.plan_verifier import verify_plan, auto_fix_direction, auto_fix_each_end_caps, auto_fix_t_shape_extend
 from skills.plan_patcher import patch_chain_references
 
 logger = logging.getLogger(__name__)
@@ -540,11 +540,22 @@ class OpenAIPurpleAgent(AgentExecutor):
             for i, s in enumerate(steps):
                 logger.info("  Step %d: %s %s count=%s pos=%s", i+1, s.action, s.color, s.count, s.position)
 
-            # Step 3b: Auto-fix direction errors (deterministic)
+            # Step 3b: Patch chain reference coordinates (before auto-fixes
+            # so fixes see resolved literal coordinates)
+            steps = patch_chain_references(steps, parsed.start_grid)
+
+            # Step 3c: Auto-fix direction errors (deterministic)
             steps = auto_fix_direction(parsed.instruction_text, steps)
 
-            # Step 3c: Patch chain reference coordinates
-            steps = patch_chain_references(steps, parsed.start_grid)
+            # Step 3c2: Auto-fix each-end cap positions (deterministic)
+            steps = auto_fix_each_end_caps(
+                parsed.instruction_text, steps, parsed.start_grid
+            )
+
+            # Step 3c3: Auto-fix T-shape extend direction (deterministic)
+            steps = auto_fix_t_shape_extend(
+                parsed.instruction_text, steps, parsed.start_grid
+            )
 
             # Step 3d: Verify plan against instruction
             verification = verify_plan(
@@ -567,8 +578,14 @@ class OpenAIPurpleAgent(AgentExecutor):
                     logger.info("Re-plan returned no steps, falling back")
                     return None
                 # Apply auto-fixes again after re-plan
-                steps = auto_fix_direction(parsed.instruction_text, steps)
                 steps = patch_chain_references(steps, parsed.start_grid)
+                steps = auto_fix_direction(parsed.instruction_text, steps)
+                steps = auto_fix_each_end_caps(
+                    parsed.instruction_text, steps, parsed.start_grid
+                )
+                steps = auto_fix_t_shape_extend(
+                    parsed.instruction_text, steps, parsed.start_grid
+                )
                 logger.info("Re-planned %d steps", len(steps))
                 for i, s in enumerate(steps):
                     logger.info("  Re-step %d: %s %s count=%s pos=%s", i+1, s.action, s.color, s.count, s.position)

@@ -99,6 +99,19 @@ def _count_block_placing_phrases(text: str) -> list[dict]:
                 'end': m.end(),
             })
 
+    # Post-processing: detect counts in "of N blocks" patterns that follow
+    # the matched phrase.  Handles "a yellow stack of three blocks" where
+    # the regex captures "build a yellow stack" but misses the trailing
+    # "of three blocks".
+    _COUNT_AFTER = re.compile(
+        r'\s+of\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine)\b'
+    )
+    for p in phrases:
+        if not p['has_number']:
+            lookahead = text_lower[p['end']:p['end'] + 30]
+            if _COUNT_AFTER.match(lookahead):
+                p['has_number'] = True
+
     return phrases
 
 

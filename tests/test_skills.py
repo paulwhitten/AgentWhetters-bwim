@@ -911,6 +911,52 @@ class TestColorSpecificCountQuestion:
         # First color should be used
         assert r.uncounted_color in ("Red", "Yellow")
 
+    def test_yellow_stack_of_three_targets_green(self):
+        """'a yellow stack of three blocks' has a specified count.
+        The unspecified stack is the green one, so the question should
+        reference green, not yellow."""
+        r = self._detect(
+            "Build a yellow stack of three blocks to the left of the "
+            "existing block. Build a green stack to the left of the "
+            "yellow stack."
+        )
+        assert r.has_missing_number
+        assert r.uncounted_color == "Green", (
+            f"Question should target Green (unspecified), not "
+            f"'{r.uncounted_color}'"
+        )
+        assert "green" in r.suggested_count_question.lower()
+
+    def test_blue_stack_of_three_targets_red(self):
+        """'a blue stack of three blocks' has a specified count.
+        The unspecified stack is the red one."""
+        r = self._detect(
+            "Build a row of three green blocks, starting from the "
+            "middle square and going to the right. Build a blue stack "
+            "of three blocks immediately to the right of the green "
+            "row. Build a red stack to the right of the blue one."
+        )
+        assert r.has_missing_number
+        assert r.uncounted_color == "Red", (
+            f"Question should target Red (unspecified), not "
+            f"'{r.uncounted_color}'"
+        )
+        assert "red" in r.suggested_count_question.lower()
+
+    def test_count_after_noun_not_treated_as_missing(self):
+        """Phrases like 'a yellow stack of three blocks' should not
+        appear in uncounted_phrases."""
+        r = self._detect(
+            "Build a yellow stack of three blocks. "
+            "Build a green stack nearby."
+        )
+        # Yellow should NOT be in uncounted_phrases
+        uncounted_colors = [c for c, _ in r.uncounted_phrases]
+        assert "Yellow" not in uncounted_colors, (
+            "Yellow has a specified count ('of three blocks') and "
+            "should not be in uncounted_phrases"
+        )
+
 
 class TestCompoundQuestion:
     """Test compound question generation when both color and count are missing."""
@@ -964,3 +1010,237 @@ class TestCompoundQuestion:
             q = r.suggested_compound_question
             assert "color" in q.lower() or "what color" in q.lower()
             assert "how many" in q.lower() or "blocks" in q.lower()
+
+
+# --- Auto-fix each-end caps tests ---
+
+from skills.plan_verifier import auto_fix_each_end_caps
+
+
+class TestAutoFixEachEndCaps:
+    """Tests for deterministic each-end cap position correction."""
+
+    def _make_grid(self, blocks_str: str) -> Grid:
+        return Grid.from_str(blocks_str)
+
+    def _make_step(self, action: str, color: str, count: int, pos: dict) -> BuildStep:
+        return BuildStep(action=action, color=color, count=count, position=pos)
+
+    def test_fixes_right_end_cap_after_extend_right(self):
+        """After extending right, cap at old right end should move to new right end."""
+        instruction = "Extend it horizontally by adding two red blocks to its right. Place one block on top of each end of this extended row."
+        grid = self._make_grid("Red,-100,50,0;Red,0,50,0;Red,100,50,0")
+        steps = [
+            self._make_step("extend_row", "Red", 2, {"x": 200, "z": 0, "direction": "right"}),
+            self._make_step("stack", "Red", 1, {"x": -100, "z": 0}),   # left end (correct)
+            self._make_step("stack", "Red", 1, {"x": 100, "z": 0}),     # old right end (WRONG)
+        ]
+        fixed = auto_fix_each_end_caps(instruction, steps, grid)
+        assert int(fixed[1].position["x"]) == -100, "Left end should stay at -100"
+        assert int(fixed[2].position["x"]) == 300, "Right end should be fixed to 300"
+
+    def test_no_change_when_already_correct(self):
+        """If the cap is already at the correct new end, nothing changes."""
+        instruction = "Place one block on top of each end of this extended row."
+        grid = self._make_grid("Red,-100,50,0;Red,0,50,0;Red,100,50,0")
+        steps = [
+            self._make_step("extend_row", "Red", 2, {"x": 200, "z": 0, "direction": "right"}),
+            self._make_step("stack", "Red", 1, {"x": -100, "z": 0}),
+            self._make_step("stack", "Red", 1, {"x": 300, "z": 0}),     # already correct
+        ]
+        fixed = auto_fix_each_end_caps(instruction, steps, grid)
+        assert int(fixed[2].position["x"]) == 300
+
+    def test_no_trigger_without_each_end(self):
+        """If instruction doesn't mention 'each end', no fix is applied."""
+        instruction = "Extend it horizontally by adding two red blocks to its right."
+        grid = self._make_grid("Red,-100,50,0;Red,0,50,0;Red,100,50,0")
+        steps = [
+            self._make_step("extend_row", "Red", 2, {"x": 200, "z": 0, "direction": "right"}),
+            self._make_step("stack", "Red", 1, {"x": 100, "z": 0}),
+        ]
+        fixed = auto_fix_each_end_caps(instruction, steps, grid)
+        assert int(fixed[1].position["x"]) == 100, "Should not change without 'each end'"
+
+    def test_fixes_left_end_cap_after_extend_left(self):
+        """After extending left, cap at old left end should move to new left end."""
+        instruction = "Extend it by adding two blocks to its left. Place one block on top of each end."
+        grid = self._make_grid("Red,-100,50,0;Red,0,50,0;Red,100,50,0")
+        steps = [
+            self._make_step("extend_row", "Red", 2, {"x": -200, "z": 0, "direction": "left"}),
+            self._make_step("stack", "Red", 1, {"x": -100, "z": 0}),    # old left end (WRONG)
+            self._make_step("stack", "Red", 1, {"x": 100, "z": 0}),     # right end (correct)
+        ]
+        fixed = auto_fix_each_end_caps(instruction, steps, grid)
+        assert int(fixed[1].position["x"]) == -300, "Left end should be fixed to -300"
+        assert int(fixed[2].position["x"]) == 100, "Right end should stay at 100"
+
+    def test_both_ends_trigger(self):
+        """'both ends' should also trigger the fix."""
+        instruction = "Place a block on both ends of the extended row."
+        grid = self._make_grid("Red,-100,50,0;Red,0,50,0;Red,100,50,0")
+        steps = [
+            self._make_step("extend_row", "Red", 2, {"x": 200, "z": 0, "direction": "right"}),
+            self._make_step("stack", "Red", 1, {"x": -100, "z": 0}),
+            self._make_step("stack", "Red", 1, {"x": 100, "z": 0}),
+        ]
+        fixed = auto_fix_each_end_caps(instruction, steps, grid)
+        assert int(fixed[2].position["x"]) == 300
+
+    def test_no_extend_step_returns_unchanged(self):
+        """If there is no extend_row step and no extension phrase in instruction, nothing changes."""
+        instruction = "Place one block on top of each end."
+        grid = self._make_grid("Red,-100,50,0;Red,0,50,0;Red,100,50,0")
+        steps = [
+            self._make_step("stack", "Red", 1, {"x": -100, "z": 0}),
+            self._make_step("stack", "Red", 1, {"x": 100, "z": 0}),
+        ]
+        fixed = auto_fix_each_end_caps(instruction, steps, grid)
+        assert int(fixed[0].position["x"]) == -100
+        assert int(fixed[1].position["x"]) == 100
+
+    def test_fallback_no_extend_row_but_instruction_says_extend_right(self):
+        """Fallback: no extend_row step, but instruction says 'adding two blocks to its right'."""
+        instruction = "Extend it horizontally by adding two red blocks to its right. Place one block on top of each end of this extended row."
+        grid = self._make_grid("Red,-100,50,0;Red,0,50,0;Red,100,50,0")
+        # LLM used individual place steps instead of extend_row
+        steps = [
+            self._make_step("place", "Red", 1, {"x": 200, "z": 0}),
+            self._make_step("place", "Red", 1, {"x": 300, "z": 0}),
+            self._make_step("stack", "Red", 1, {"x": -100, "z": 0}),   # left cap (correct)
+            self._make_step("stack", "Red", 1, {"x": 100, "z": 0}),     # old right cap (WRONG)
+        ]
+        fixed = auto_fix_each_end_caps(instruction, steps, grid)
+        assert int(fixed[2].position["x"]) == -100, "Left end should stay at -100"
+        assert int(fixed[3].position["x"]) == 300, "Right end should be fixed to 300 via fallback"
+
+    def test_fallback_no_extend_row_extend_left(self):
+        """Fallback: instruction says 'adding three blocks going left'."""
+        instruction = "Add three green blocks going left. Put a block on each end."
+        grid = self._make_grid("Green,100,50,0;Green,200,50,0")
+        steps = [
+            self._make_step("place", "Green", 1, {"x": 0, "z": 0}),
+            self._make_step("place", "Green", 1, {"x": -100, "z": 0}),
+            self._make_step("place", "Green", 1, {"x": -200, "z": 0}),
+            self._make_step("stack", "Green", 1, {"x": 200, "z": 0}),   # right end (correct)
+            self._make_step("stack", "Green", 1, {"x": 100, "z": 0}),   # old left end (WRONG)
+        ]
+        fixed = auto_fix_each_end_caps(instruction, steps, grid)
+        assert int(fixed[3].position["x"]) == 200, "Right end should stay at 200"
+        assert int(fixed[4].position["x"]) == -200, "Left end should be fixed to -200 via fallback"
+
+    def test_z_axis_extend_front(self):
+        """Test z-axis row extension (front direction)."""
+        instruction = "Extend it by adding two blocks to the front. Place one on each end."
+        grid = self._make_grid("Red,0,50,-100;Red,0,50,0;Red,0,50,100")
+        steps = [
+            self._make_step("extend_row", "Red", 2, {"x": 0, "z": 200, "direction": "front"}),
+            self._make_step("stack", "Red", 1, {"x": 0, "z": -100}),    # unchanged end (correct)
+            self._make_step("stack", "Red", 1, {"x": 0, "z": 100}),     # old front end (WRONG)
+        ]
+        fixed = auto_fix_each_end_caps(instruction, steps, grid)
+        assert int(fixed[1].position["z"]) == -100
+        assert int(fixed[2].position["z"]) == 300, "Front end should be fixed to 300"
+
+
+# --- Auto-fix T-shape extend tests ---
+
+from skills.plan_verifier import auto_fix_t_shape_extend
+
+
+class TestAutoFixTShapeExtend:
+    """Tests for deterministic T-shape extend direction correction."""
+
+    def _make_grid(self, blocks_str: str) -> Grid:
+        return Grid.from_str(blocks_str)
+
+    def _make_step(self, action: str, color: str, count: int, pos: dict) -> BuildStep:
+        return BuildStep(action=action, color=color, count=count, position=pos)
+
+    def test_fixes_on_top_to_front_for_stem_along_plus_z(self):
+        """Actual stimulus: stem runs +z, model says 'on_top', should be 'front'."""
+        instruction = "Keeping the T shape, extend the existing green structure by adding two green blocks to the longer base."
+        # Crossbar at z=-100: (-100,-100), (0,-100), (100,-100)
+        # Stem along z at x=0: (0,-100), (0,0), (0,100), (0,200)
+        grid = self._make_grid(
+            "Green,-100,50,-100;Green,0,50,-100;Green,100,50,-100;"
+            "Green,0,50,0;Green,0,50,100;Green,0,50,200"
+        )
+        steps = [
+            self._make_step("extend_row", "Green", 2, {"x": 0, "z": 200, "direction": "on_top"}),
+            self._make_step("place", "Purple", 1, {"x": -200, "z": -100}),
+            self._make_step("place", "Purple", 1, {"x": 200, "z": -100}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].position["direction"] == "front"
+        assert int(fixed[0].position["x"]) == 0
+        assert int(fixed[0].position["z"]) == 300  # past base z=200
+
+    def test_fixes_on_top_to_behind_for_stem_along_minus_z(self):
+        """Stem runs -z, should map to 'behind'."""
+        instruction = "Keeping the T shape, extend by two blocks to the longer base."
+        # Crossbar at z=0: (100,0), (200,0), (300,0)
+        # Stem along z at x=200: (200,0), (200,-100), (200,-200), (200,-300) = 4 blocks
+        grid = self._make_grid(
+            "Red,100,50,0;Red,200,50,0;Red,300,50,0;"
+            "Red,200,50,-100;Red,200,50,-200;Red,200,50,-300"
+        )
+        steps = [
+            self._make_step("extend_row", "Red", 2, {"x": 200, "z": -300, "direction": "on_top"}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].position["direction"] == "behind"
+        assert int(fixed[0].position["z"]) == -400  # past base z=-300
+
+    def test_no_trigger_without_t_shape(self):
+        """If instruction doesn't mention T-shape, no fix."""
+        instruction = "Extend the row by two blocks."
+        grid = self._make_grid("Red,-100,50,0;Red,0,50,0;Red,100,50,0")
+        steps = [
+            self._make_step("extend_row", "Red", 2, {"x": 200, "z": 0, "direction": "on_top"}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].position["direction"] == "on_top"  # not changed
+
+    def test_no_change_when_direction_already_correct(self):
+        """If direction is already correct, don't change anything."""
+        instruction = "Keeping the T shape, extend by two blocks."
+        grid = self._make_grid(
+            "Green,-100,50,-100;Green,0,50,-100;Green,100,50,-100;"
+            "Green,0,50,0;Green,0,50,100;Green,0,50,200"
+        )
+        steps = [
+            self._make_step("extend_row", "Green", 2, {"x": 0, "z": 300, "direction": "front"}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].position["direction"] == "front"
+        assert int(fixed[0].position["z"]) == 300  # unchanged
+
+    def test_fixes_wrong_direction_right_to_left(self):
+        """Stem along x decreasing, model says 'right', should be 'left'."""
+        instruction = "Keeping the T shape, extend the longer base."
+        # Crossbar at z=0 (vertical): (0,-100), (0,0), (0,100)
+        # Stem along x at z=0: (0,0), (-100,0), (-200,0), (-300,0) = 4 blocks
+        grid = self._make_grid(
+            "Red,0,50,-100;Red,0,50,0;Red,0,50,100;"
+            "Red,-100,50,0;Red,-200,50,0;Red,-300,50,0"
+        )
+        steps = [
+            self._make_step("extend_row", "Red", 2, {"x": -300, "z": 0, "direction": "right"}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].position["direction"] == "left"
+        assert int(fixed[0].position["x"]) == -400  # past base x=-300
+
+    def test_no_extend_step_returns_unchanged(self):
+        """If no extend_row step, nothing changes."""
+        instruction = "Keeping the T shape, add blocks."
+        grid = self._make_grid(
+            "Green,-100,50,-100;Green,0,50,-100;Green,100,50,-100;"
+            "Green,0,50,0;Green,0,50,100;Green,0,50,200"
+        )
+        steps = [
+            self._make_step("place", "Green", 1, {"x": 0, "z": 300}),
+        ]
+        fixed = auto_fix_t_shape_extend(instruction, steps, grid)
+        assert fixed[0].action == "place"

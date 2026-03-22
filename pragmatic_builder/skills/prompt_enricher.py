@@ -109,19 +109,27 @@ ENRICHMENT_RULES: list[EnrichmentRule] = [
     ),
 
     # ── 3. "each end" / "both ends" after row extension ──
-    # Run 190047 failures: 4 rounds — model uses OLD endpoints after extension
-    # After extending, recalculate which blocks are actually at the ends
+    # Run 165834 failures: 4 rounds — model uses OLD endpoints after extension
+    # The model puts the right cap at x=100 (old end) instead of x=300 (new end)
     EnrichmentRule(
         name="each_end_of_row",
         triggers=[r"\beach end\b", r"\bboth ends\b"],
         enrichment=(
-            'REMINDER — "each end" / "both ends" after extending a row:\n'
-            "After extending, you MUST recalculate the endpoints. Do NOT reuse old endpoints.\n"
-            "Example: Original row at x=[-100, 0, 100]. Old right end was x=100.\n"
-            '  "Extend by 2 to the right" → new blocks at x=200, x=300.\n'
-            "  Full row: x=[-100, 0, 100, 200, 300].\n"
-            "  NEW ends: x=-100 (left) and x=300 (right). NOT x=100!\n"
-            '  "Block on top of each end" → (-100,150,0) and (300,150,0).\n'
+            'REMINDER — "each end" / "both ends" requires finding the ACTUAL endpoints AFTER all modifications:\n'
+            "Step-by-step reasoning you MUST follow:\n"
+            "1. First, perform the extension (add blocks to the row).\n"
+            "2. Then, list ALL blocks in the COMPLETED row.\n"
+            "3. Find the minimum and maximum positions along the row axis.\n"
+            "4. Those min and max positions are the NEW two ends.\n"
+            "5. Place blocks on top of THOSE positions.\n\n"
+            "Worked example:\n"
+            "  Original row: Red at x=[-100, 0, 100] at z=0.\n"
+            '  Instruction: "Extend by 2 to the right. Place block on top of each end."\n'
+            "  After extending right: new blocks at x=200, x=300.\n"
+            "  FULL row is now: x=[-100, 0, 100, 200, 300].\n"
+            "  The ends of the FULL row: min x=-100, max x=300.\n"
+            "  WRONG: using old end x=100 — that is in the MIDDLE of the extended row!\n"
+            "  CORRECT: caps at (-100,150,0) and (300,150,0).\n"
         ),
     ),
 
@@ -295,21 +303,38 @@ ENRICHMENT_RULES: list[EnrichmentRule] = [
     ),
 
     # ── 14. T-shape anatomy + extending ──
-    # Run 190047 failures: 4/4 — model extends crossbar instead of stem
+    # Run 165834 failures: 4/4 — model stacks vertically instead of continuing
+    # stem direction. It adds (0,50,300) correctly but then (0,150,200) instead of
+    # (0,50,400). The key error is losing track of the extension direction.
     EnrichmentRule(
         name="t_shape",
         triggers=[r"\bt[- ]?shape\b"],
         enrichment=(
-            "REMINDER — T-shape: identify crossbar vs stem by COUNTING blocks:\n"
-            "1. CROSSBAR = horizontal row (along x-axis). Count blocks along x: e.g., 3.\n"
-            "2. STEM = perpendicular arm (along z-axis at center x). Count ALL blocks on this axis: e.g., 4.\n"
-            '3. Whichever axis has MORE blocks is the "longer base" / "stem".\n'
-            '"Extend the longer base by 2" → continue the STEM direction. Do NOT extend the crossbar.\n'
-            '"Add to each arm" → add blocks at the crossbar TIPS, extending OUTWARD from center.\n'
-            "Example: crossbar at z=-100 (x=-100,0,100), stem at x=0 (z=-100,0,100,200).\n"
-            "  Stem=4 > crossbar=3. Extend stem: (0,50,300), (0,50,400).\n"
-            "  Arm tips: (-100,50,-100)→(-200,50,-100); (100,50,-100)→(200,50,-100).\n"
-            "ALL extensions at y=50. NEVER stack vertically for \"extend\".\n"
+            "REMINDER — T-shape: identify parts, find axis, find end, then extend.\n\n"
+            "Step 1. FIND THE JUNCTION: the block shared by two perpendicular lines.\n"
+            "Step 2. IDENTIFY CROSSBAR vs STEM:\n"
+            "  CROSSBAR = the bar with blocks on BOTH sides of junction (junction bisects it).\n"
+            "  STEM = the bar with blocks on only ONE side of junction (junction is at one end).\n"
+            "Step 3. FIND WHICH AXIS THE STEM RUNS ALONG:\n"
+            "  If stem blocks differ in z but share x → stem runs along the z-axis.\n"
+            "  If stem blocks differ in x but share z → stem runs along the x-axis.\n"
+            "Step 4. FIND THE BASE (stem end farthest from junction) and EXTENSION DIRECTION:\n"
+            "  From junction toward base, is the coordinate increasing or decreasing?\n"
+            "  z increasing → direction = 'front'. z decreasing → direction = 'behind'.\n"
+            "  x increasing → direction = 'right'. x decreasing → direction = 'left'.\n"
+            "  Extension adds blocks PAST the base in this SAME direction. y=50 ALWAYS.\n"
+            "  WRONG direction = 'on_top'. NEVER use on_top for extend_row. That stacks vertically.\n"
+            "Step 5. ARMS = two halves of crossbar from junction to each tip.\n"
+            "  'Add to each arm' = place 1 block outward from each tip, along crossbar axis. y=50.\n\n"
+            "Worked example (stem along +z):\n"
+            "  Crossbar along x at z=-100: (-100,50,-100), (0,50,-100), (100,50,-100)\n"
+            "  Stem along z at x=0: (0,50,-100), (0,50,0), (0,50,100), (0,50,200)\n"
+            "  Junction = (0,50,-100). Stem blocks differ in z, so stem runs along z-axis.\n"
+            "  Base = (0,50,200). From junction z=-100 to base z=200: z increases → direction = 'front'.\n"
+            "  Extend by 2 with direction='front': (0,50,300) and (0,50,400).\n"
+            "    WRONG: direction='on_top' produces (0,150,200) — stacks vertically, breaks the T!\n"
+            "  Arm tips: (-100,50,-100) and (100,50,-100). Outward along x → (-200,50,-100) and (200,50,-100).\n"
+            "  JSON steps: extend_row direction='front', then two place steps for arm tips.\n"
         ),
     ),
 

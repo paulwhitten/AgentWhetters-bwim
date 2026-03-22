@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .build_planner import BuildStep
+from .grid import Grid
+from .structure_analyzer import analyze_structure
 
 logger = logging.getLogger(__name__)
 
@@ -403,5 +405,352 @@ def auto_fix_direction(
         elif has_right and not has_left and plan_dir == "left":
             logger.info("Auto-fixing direction: left → right for extend_row step")
             step.position["direction"] = "right"
+
+    return steps
+
+
+# Pattern for "each end" / "both ends" phrases
+_EACH_END_PATTERN = re.compile(
+    r'\b(?:each|both)\s+ends?\b',
+    re.IGNORECASE,
+)
+
+# Fallback pattern to parse extension from instruction text
+_EXTEND_INSTR_PATTERN = re.compile(
+    r'(?:extend|add(?:ing)?)\s+.*?'
+    r'(\d+|one|two|three|four|five|six|seven|eight|nine)\s+'
+    r'(?:\w+\s+)?blocks?\s+'
+    r'(?:to\s+its\s+|going\s+)?'
+    r'(right|left|front|behind|forward|back)',
+    re.IGNORECASE,
+)
+_WORD_TO_INT = {
+    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9,
+}
+
+
+def auto_fix_each_end_caps(
+    instruction: str,
+    steps: list[BuildStep],
+    start_grid: Grid,
+) -> list[BuildStep]:
+    """Fix 'each end' cap positions after extend_row steps.
+
+    Common LLM error: after extending a row, the model places caps at the
+    OLD endpoint instead of the NEW endpoint of the extended row.
+
+    Detects the pattern and corrects cap coordinates to match the actual
+    row extent after extension. Fully deterministic, no LLM needed.
+
+    Falls back to parsing extension details from the instruction text
+    when no extend_row step is found in the plan.
+    """
+    if not _EACH_END_PATTERN.search(instruction):
+        return steps
+
+    # Find extend_row step
+    extend_idx = None
+    extend_step = None
+    for i, step in enumerate(steps):
+        if step.action == "extend_row":
+            extend_idx = i
+            extend_step = step
+            break
+
+    if extend_step is None:
+        # Fallback: parse extension from instruction text
+        ext_match = _EXTEND_INSTR_PATTERN.search(instruction)
+        if not ext_match:
+            return steps
+        count_str = ext_match.group(1).lower()
+        direction = ext_match.group(2).lower()
+        count = _WORD_TO_INT.get(count_str)
+        if count is None:
+            try:
+                count = int(count_str)
+            except ValueError:
+                return steps
+        if count <= 0:
+            return steps
+        # Use fallback path with inferred direction/count
+        return _fix_caps_for_extension(
+            instruction, steps, start_grid, direction, count,
+            cap_search_start=0,
+        )
+
+    # Get extension direction and count
+    pos = extend_step.position
+    direction = pos.get("direction", "right").lower()
+
+    count = extend_step.count
+    if isinstance(count, str):
+        try:
+            count = int(count)
+        except ValueError:
+            return steps
+    count = int(count)
+
+    if count <= 0:
+        return steps
+
+    return _fix_caps_for_extension(
+        instruction, steps, start_grid, direction, count,
+        cap_search_start=extend_idx + 1,
+    )
+
+
+def _fix_caps_for_extension(
+    instruction: str,
+    steps: list[BuildStep],
+    start_grid: Grid,
+    direction: str,
+    count: int,
+    cap_search_start: int,
+) -> list[BuildStep]:
+    """Shared logic: fix cap positions given extension direction and count."""
+    config = start_grid.config
+    grid_step = config.grid_step
+
+    # Determine which axis changes with extension
+    horizontal = direction in ("left", "right")
+
+    # Find ground-level blocks that form the row
+    ground_y = config.valid_y[0]
+    # Find ground-level blocks that form the row
+    ground_y = config.valid_y[0]
+    ground_blocks = [b for b in start_grid.blocks if b.y == ground_y]
+    if not ground_blocks:
+        return steps
+
+    if horizontal:
+        # Row runs along x-axis; find the common z value
+        z_values = [b.z for b in ground_blocks]
+        row_z = max(set(z_values), key=z_values.count)
+        row_xs = sorted(b.x for b in ground_blocks if b.z == row_z)
+        if not row_xs:
+            return steps
+
+        old_min_x = min(row_xs)
+        old_max_x = max(row_xs)
+
+        if direction == "right":
+            new_max_x = old_max_x + count * grid_step
+            old_end = old_max_x
+            new_end = new_max_x
+        else:
+            new_min_x = old_min_x - count * grid_step
+            old_end = old_min_x
+            new_end = new_min_x
+
+        # Fix subsequent cap steps that land on the old endpoint
+        for i, step in enumerate(steps):
+            if i < cap_search_start:
+                continue
+            if step.action not in ("stack", "place", "place_relative"):
+                continue
+
+            sx = step.position.get("x")
+            sz = step.position.get("z")
+            if sx is None or sz is None:
+                continue
+            try:
+                sx, sz = int(sx), int(sz)
+            except (ValueError, TypeError):
+                continue
+
+            if sz != row_z:
+                continue
+
+            # Cap at the old endpoint that is now interior to the row
+            if sx == old_end and sx != new_end:
+                logger.info(
+                    "Auto-fixing each-end cap: x=%d → x=%d "
+                    "(new %s end after row extension)",
+                    sx, new_end,
+                    "right" if direction == "right" else "left",
+                )
+                step.position["x"] = new_end
+
+    else:
+        # Row runs along z-axis (front/back extension)
+        x_values = [b.x for b in ground_blocks]
+        row_x = max(set(x_values), key=x_values.count)
+        row_zs = sorted(b.z for b in ground_blocks if b.x == row_x)
+        if not row_zs:
+            return steps
+
+        old_min_z = min(row_zs)
+        old_max_z = max(row_zs)
+
+        if direction in ("front", "forward", "in_front"):
+            new_max_z = old_max_z + count * grid_step
+            old_end = old_max_z
+            new_end = new_max_z
+        else:
+            new_min_z = old_min_z - count * grid_step
+            old_end = old_min_z
+            new_end = new_min_z
+
+        for i, step in enumerate(steps):
+            if i < cap_search_start:
+                continue
+            if step.action not in ("stack", "place", "place_relative"):
+                continue
+
+            sx = step.position.get("x")
+            sz = step.position.get("z")
+            if sx is None or sz is None:
+                continue
+            try:
+                sx, sz = int(sx), int(sz)
+            except (ValueError, TypeError):
+                continue
+
+            if sx != row_x:
+                continue
+
+            if sz == old_end and sz != new_end:
+                logger.info(
+                    "Auto-fixing each-end cap: z=%d → z=%d "
+                    "(new %s end after row extension)",
+                    sz, new_end,
+                    "front" if direction in ("front", "forward", "in_front") else "back",
+                )
+                step.position["z"] = new_end
+
+    return steps
+
+
+# ── T-shape direction keyword mapping ──
+_DIRECTION_MAP = {
+    ("x", True): "right",
+    ("x", False): "left",
+    ("z", True): "front",
+    ("z", False): "behind",
+}
+
+# Triggers for T-shape instructions
+_T_SHAPE_PATTERN = re.compile(r'\bt[- ]?shape\b', re.IGNORECASE)
+_EXTEND_PATTERN = re.compile(r'\bextend\b', re.IGNORECASE)
+
+
+def auto_fix_t_shape_extend(
+    instruction: str,
+    steps: list[BuildStep],
+    start_grid: Grid,
+) -> list[BuildStep]:
+    """Fix extend_row direction for T-shape extensions.
+
+    The LLM frequently generates direction="on_top" for T-shape stem
+    extensions, which crashes the executor. This function:
+    1. Detects T-shape instructions
+    2. Uses the structure analyzer to identify the T-shape parts
+    3. Computes the correct stem extension direction from the geometry
+    4. Fixes any extend_row step with wrong direction
+
+    Fully deterministic, no LLM needed.
+    """
+    if not _T_SHAPE_PATTERN.search(instruction):
+        return steps
+    if not _EXTEND_PATTERN.search(instruction):
+        return steps
+
+    # Find extend_row step
+    extend_step = None
+    extend_idx = None
+    for i, step in enumerate(steps):
+        if step.action == "extend_row":
+            extend_step = step
+            extend_idx = i
+            break
+
+    if extend_step is None:
+        return steps
+
+    # Analyze the starting structure
+    analysis = analyze_structure(start_grid)
+
+    # Find the T-shape
+    t_shape = None
+    for shape in analysis.shapes:
+        if shape.shape_type == "T":
+            t_shape = shape
+            break
+
+    if t_shape is None or t_shape.stem is None:
+        return steps
+
+    stem = t_shape.stem
+    crossbar = t_shape.crossbar
+
+    # Determine which part to extend
+    # "longer base" / "longer part" → the longer of crossbar vs stem
+    longer = t_shape.longer_base or "stem"
+    inst_lower = instruction.lower()
+    if "longer" in inst_lower:
+        if longer == "crossbar":
+            extend_line = crossbar
+        else:
+            extend_line = stem
+    else:
+        # Default to stem extension
+        extend_line = stem
+
+    if extend_line is None:
+        return steps
+
+    # Find the junction position (shared by crossbar and stem)
+    crossbar_set = set(crossbar.positions) if crossbar else set()
+    stem_set = set(stem.positions) if stem else set()
+    junction_set = crossbar_set & stem_set
+    if not junction_set:
+        return steps
+    junction = junction_set.pop()
+
+    # Determine the axis the extend line runs along and the base position
+    if extend_line.direction == "horizontal":
+        axis = "x"
+        # Base = the end farthest from junction
+        d_start = abs(extend_line.start[0] - junction[0])
+        d_end = abs(extend_line.end[0] - junction[0])
+        base = extend_line.end if d_end >= d_start else extend_line.start
+        increasing = base[0] > junction[0]
+    else:
+        axis = "z"
+        d_start = abs(extend_line.start[1] - junction[1])
+        d_end = abs(extend_line.end[1] - junction[1])
+        base = extend_line.end if d_end >= d_start else extend_line.start
+        increasing = base[1] > junction[1]
+
+    correct_direction = _DIRECTION_MAP[(axis, increasing)]
+
+    # Check current direction
+    current_dir = extend_step.position.get("direction", "").lower()
+
+    # Fix invalid or wrong directions
+    invalid_dirs = {"on_top", "on top", "above", "up", ""}
+    if current_dir in invalid_dirs or current_dir != correct_direction:
+        logger.info(
+            "Auto-fixing T-shape extend direction: '%s' → '%s' "
+            "(stem runs along %s-axis, base at %s, %s)",
+            current_dir, correct_direction,
+            axis, base, "increasing" if increasing else "decreasing",
+        )
+        extend_step.position["direction"] = correct_direction
+
+        # Also fix the starting position for the extend_row
+        # The extension should start past the base
+        grid_step = start_grid.config.grid_step
+        if axis == "x":
+            start_x = base[0] + (grid_step if increasing else -grid_step)
+            start_z = base[1]
+            extend_step.position["x"] = start_x
+            extend_step.position["z"] = start_z
+        else:
+            start_x = base[0]
+            start_z = base[1] + (grid_step if increasing else -grid_step)
+            extend_step.position["x"] = start_x
+            extend_step.position["z"] = start_z
 
     return steps
