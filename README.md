@@ -1,12 +1,12 @@
 # AgentWhetters BWIM
 
-Copied and adaptedfrom the [build_what_i_men agent](https://github.com/ltl-uva/build_what_i_mean).
+Copied and adapted from the [build_what_i_men agent](https://github.com/ltl-uva/build_what_i_mean).
 
 Based on the minimal template for building [A2A (Agent-to-Agent)](https://a2a-protocol.org/latest/) green agents compatible with the [AgentBeats](https://agentbeats.dev) platform.
 
-This agent is designed use gpt-4o-mini for the bwim problem.
+This project contains a purple agent designed use gpt-4o-mini for the bwim problem.
 
-It incorporates spatial reasoning skills, instruction decomposition, underspecification detection, and adaptive prompt enrichment for the build what I mean task.
+It incorporates spatial reasoning skills, instruction decomposition, underspecification detection, adaptive prompt enrichment, and build execution that simplifies the build space for the build what I mean task. More details on the purple agent are in the [purple agent README](./pragmatic_builder/purple_openai/README.md) or the [article draft](https://paul.whitten.dev/agentwhetter_bwim_article.pdf).
 
 ## Project Structure
 
