@@ -25,7 +25,7 @@
 
 \begin{abstract}
 We present \textbf{AgentWhetters BWIM}, a purple agent for the AgentBeats
-\emph{Build What I Mean} (BWIM) benchmark that constructs block structures on a
+\emph{Build What I Mean} (BWIM) benchmark~\cite{bwim,agentbeats} that constructs block structures on a
 $9\!\times\!5\!\times\!9$ grid from sometimes underspecified natural-language
 instructions. The system originated as an investigation into enabling small,
 cost-efficient language models, originally targeting edge deployment with
@@ -43,12 +43,36 @@ skills in developing, evaluating, and iterating on autonomous agents under
 realistic constraints.
 \end{abstract}
 
+\section{Related Work}
+
+Large language models exhibit well-documented weaknesses in spatial and
+directional reasoning. Yamada et al.~\cite{yamada2024} benchmark LLMs on
+spatial tasks and find that chain-of-thought prompting and explicit coordinate
+tracking improve accuracy, while Bang et al.~\cite{bang2023} document
+persistent failures in relative positioning and chain references for
+GPT-family models. These findings motivate our design: rather than relying on
+the LLM for coordinate computation, we confine it to instruction
+comprehension and plan generation, delegating all spatial arithmetic to
+deterministic code.
+
+Our pipeline draws on several prior approaches. The plan-then-execute
+decomposition follows Wang et al.~\cite{wang2023}, who show that separating
+planning from execution improves zero-shot reasoning. The modular skill
+structure is informed by decomposed prompting~\cite{khot2023}, which splits
+complex tasks into sub-problems handled by specialized modules. The
+generate-verify-fix loop in our plan verifier parallels the self-refinement
+approach of Madaan et al.~\cite{madaan2023}. Our use of deterministic code
+for coordinate arithmetic reflects the tool-augmented approach explored by
+Schick et al.~\cite{schick2023}, and the overall split between language
+understanding and symbolic execution echoes the neuro-symbolic design of
+Yi et al.~\cite{yi2018}.
+
 \section{Architecture}
 
 The agent decomposes each building instruction through a five-stage pipeline:
 \textbf{parse}, \textbf{plan}, \textbf{detect underspecification},
 \textbf{execute}, and \textbf{format}.  If any stage fails, control falls back
-to a direct LLM call with a carefully engineered system prompt.
+to a direct LLM call with an engineered system prompt.
 
 \begin{enumerate}[leftmargin=*]
   \item \textbf{Instruction Parser.} Extracts the green agent's instruction
@@ -65,9 +89,10 @@ to a direct LLM call with a carefully engineered system prompt.
     instruction into a sequence of atomic build steps expressed as typed JSON
     actions (\texttt{stack}, \texttt{place\_relative}, \texttt{extend\_row},
     etc.), each with a color, count, and position specification.  Nine worked
-    examples in the system prompt covering: chains, L-shapes, T-shapes, and
-    edge placements anchor the model's spatial reasoning within the coordinate
-    system.
+    examples in the system prompt, following the chain-of-thought
+    approach~\cite{wei2022}, cover chains, L-shapes, T-shapes, and
+    edge placements to anchor the model's spatial reasoning within the
+    coordinate system.
 
   \item \textbf{Plan Verifier and Deterministic Corrections.} A rule-based
     post-planner validates the LLM-generated plan against the instruction text
@@ -129,7 +154,7 @@ to a direct LLM call with a carefully engineered system prompt.
 
 \section{Underspecification Detection}
 
-A critical challenge in the benchmark is that many instructions omit color or
+A key challenge in the benchmark is that many instructions omit color or
 block count.  Our agent employs a two-tiered detection strategy:
 
 \begin{itemize}[leftmargin=*]
@@ -177,7 +202,7 @@ block count.  Our agent employs a two-tiered detection strategy:
 
 \section{Adaptive Prompt Enrichment}
 
-We observe that certain spatial concepts such as``each end,'' chain references,
+We observe that certain spatial concepts such as ``each end,'' chain references,
 L-shape extensions, T-shape junctions are disproportionately error-prone for
 small models.  Our \emph{adaptive prompt enrichment} system scans each incoming
 instruction against a library of 15 pattern-matching rules.  When a rule fires,
@@ -216,17 +241,22 @@ individual test item than the test items share with each other.
 
   \item \textbf{Graceful degradation.} If the skills pipeline encounters an
     unrecoverable error at any stage, the agent falls back to a direct LLM call
-    with a comprehensive system prompt, ensuring every round produces a valid
+    with a detailed system prompt containing coordinate examples and spatial
+    rules, ensuring every round produces a valid
     \texttt{[BUILD]} response.
 \end{itemize}
 
 \section{Results}
 
-Table~\ref{tab:results} summarizes representative runs across development
+Table~\ref{tab:results} summarizes score progression across development
 iterations. In local evaluation against the benchmark's 160-round scenario
-(combining rational and unreliable architect partners), the agent's best run
-achieves 95.6\% structural accuracy (153 of 160 rounds correct) with a
-cumulative score of $+980$.
+(combining rational and unreliable architect partners), the agent achieves
+93.8--95.6\% structural accuracy across three consecutive runs with the
+final codebase, scoring $+920$ to $+980$ (mean $+953$, mean accuracy 94.8\%).
+All three runs use GPT-4o-mini. A fourth run using GPT-4o scores $+960$
+(95.0\% accuracy), falling within the same range as the GPT-4o-mini results.
+This confirms that the deterministic pipeline rather than model size drives
+the performance gains.
 
 \begin{table}[h]
 \centering
@@ -266,18 +296,96 @@ horizontally past it. This fix raised the score from $+860$ to $+980$ and
 moved both T-shape (2/4 to 4/4) and each-end (2/4 to 4/4) sub-tasks to
 perfect accuracy.
 
-The 7 remaining failures in the best run fall into two categories.
-First, 5 rounds where the green agent (architect) provided incorrect color
-or count information in its instruction, for example naming a block color as
-Green when the target structure contained Blue, or reporting 4 blocks as the
-count for a stack that should have 3. These errors originate in the architect
-LLM and cannot be corrected by the builder agent. Second, 2 rounds of LLM
-spatial reasoning errors: one incorrect chain coordinate reference and one
-L-shape with combined wrong-color and vertical stacking.
+Across the three final runs (7, 8, and 10 failures respectively), the
+failure causes are consistent. In the best run, 5 of 7 failures originate
+in the green agent (architect) providing incorrect color or count
+information. For example, the architect names a block color as Green when
+the target structure contains Blue, or reports a count of 4 for a stack
+that should have 3. These errors arise because the green agent is itself an
+LLM (GPT-4o-mini) that sometimes misreads its own coordinate data.
+The remaining 2 failures are LLM spatial reasoning errors in the purple
+agent: one incorrect chain coordinate reference and one L-shape with
+combined wrong-color and vertical stacking.
 
-The dominant remaining error source is therefore the green agent, not the
-purple agent's pipeline. Further accuracy gains would require either
-architect-side improvements or cross-validation heuristics to detect
-and compensate for architect errors.
+The dominant remaining error source is the green agent rather than the
+purple agent's pipeline. The purple agent cannot currently detect or
+compensate for architect errors because it has no independent access to the
+target structure. One possible mitigation would be a plausibility check
+that flags unlikely color or count values in the instruction, but the
+current scoring function ($-5$ per question) limits the value of
+additional verification queries.
+
+\section{Conclusion}
+
+We described AgentWhetters BWIM, a builder agent that pairs GPT-4o-mini with
+a deterministic spatial execution pipeline to achieve 93.8--95.6\% accuracy
+(mean 94.8\%) on the BWIM benchmark across three evaluation runs. A GPT-4o
+run scores 95.0\%, falling within the same range, confirming that the
+deterministic pipeline rather than model capacity is the primary driver of
+performance. The core lesson is that small language models can perform
+reliably on spatial tasks when the problem is decomposed so that the model
+handles language understanding and a code layer handles coordinate arithmetic.
+Four rule-based correction passes fix recurring LLM errors without referencing
+expected outputs, and each generalizes to arbitrary grid configurations.
+The majority of remaining failures originate in the architect agent rather
+than our pipeline, suggesting that the primary bottleneck has shifted from
+builder reasoning to architect reliability.
+
+\begin{thebibliography}{99}
+
+\bibitem{agentbeats}
+Berkeley RDI AgentX.
+\emph{AgentBeats Competition}, 2026.
+\url{https://rdi.berkeley.edu/agentx-agentbeats.html}
+
+\bibitem{bwim}
+UvA LTL.
+\emph{Build What I Mean}, 2026.
+\url{https://github.com/ltl-uva/build_what_i_mean}
+
+\bibitem{yamada2024}
+Y.~Yamada, Y.~Bao, A.~K.~Lampinen, J.~Kasai, and I.~Yildirim.
+Evaluating spatial understanding of large language models.
+\emph{Transactions on Machine Learning Research}, 2024.
+
+\bibitem{bang2023}
+Y.~Bang et al.
+A multitask, multilingual, multimodal evaluation of {ChatGPT} on
+reasoning, hallucination, and interactivity.
+In \emph{AACL}, 2023.
+
+\bibitem{wei2022}
+J.~Wei et al.
+Chain-of-thought prompting elicits reasoning in large language models.
+In \emph{NeurIPS}, 2022.
+
+\bibitem{madaan2023}
+A.~Madaan et al.
+Self-refine: Iterative refinement with self-feedback.
+In \emph{NeurIPS}, 2023.
+
+\bibitem{schick2023}
+T.~Schick et al.
+Toolformer: Language models can teach themselves to use tools.
+\emph{arXiv:2302.04761}, 2023.
+
+\bibitem{khot2023}
+T.~Khot et al.
+Decomposed prompting: A modular approach for solving complex tasks.
+In \emph{ICLR}, 2023.
+
+\bibitem{wang2023}
+L.~Wang et al.
+Plan-and-solve prompting: Improving zero-shot chain-of-thought
+reasoning by large language models.
+In \emph{ACL}, 2023.
+
+\bibitem{yi2018}
+K.~Yi et al.
+Neural-symbolic {VQA}: Disentangling reasoning from vision and
+language understanding.
+In \emph{NeurIPS}, 2018.
+
+\end{thebibliography}
 
 \end{document}
