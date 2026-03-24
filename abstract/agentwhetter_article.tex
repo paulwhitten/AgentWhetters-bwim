@@ -5,6 +5,7 @@
 \usepackage{amsmath}
 \usepackage{hyperref}
 \usepackage{enumitem}
+\usepackage{graphicx}
 
 \title{AgentWhetters: Spatial Reasoning Skills for Cost-Effective\\Block-Building Agents}
 \author{
@@ -131,13 +132,26 @@ to a direct LLM call with an engineered system prompt.
 
     A key design choice is that the LLM planner operates in what is effectively
     a two-dimensional problem space.  Each plan step specifies only a horizontal
-    position $(x, z)$ and an action type; the executor computes the vertical
+    position $(x, z)$ and an action type. The executor computes the vertical
     coordinate automatically by scanning the column for existing blocks and
     placing each new block at the next available height, much like dropping a
     piece in Connect~4.  This means the language model never needs to perform
     $y$-coordinate arithmetic (ground level at $y\!=\!50$, each block adding
-    $+100$) or track how many blocks already occupy a column.  In our initial
-    approach, the LLM was asked to produce the complete
+    $+100$) or track how many blocks already occupy a column. This approach is depicted in Figure~\ref{fig:pdffigure}
+    where a stack 3 red at $(5, 6)$ followed by place a red at $(6, 6)$ and place a red at $(7, 6)$ produces a three-block-high column at $x=5$ and single blocks at $x=6$ and $x=7$, with the executor automatically computing the correct $y$ values for each placement.
+    The last step to place a blue at $(7, 4)$ produces a blue block at $x=7$ and $z=4$ that is automatically placed at ground level.
+
+
+\begin{figure}[htbp]
+    \centering
+    % Inserts the first page of the PDF, scaled to 80% of text width
+    \includegraphics[width=0.8\textwidth]{figures/dimensional_collapse.pdf}
+    \caption{The dimensional simplification approach: the LLM planner generates 2D plans with x-z coordinates and action types, while the deterministic executor computes vertical placement based on existing grid state.}
+    \label{fig:pdffigure}
+\end{figure}
+    
+    
+    In our initial approach, the LLM was asked to produce the complete
     \texttt{[BUILD];Color,x,y,z;\ldots} response directly, which required it
     to enumerate every block's three-dimensional coordinates and to correctly
     chain height calculations across multiple stacking operations.  That
