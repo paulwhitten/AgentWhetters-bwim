@@ -364,19 +364,10 @@ class SpatialExecutor:
         #   color.  See test_extend_row which extends Blue from a Red
         #   position and expects Blue blocks starting AT that position.
         #
-        if "relative_to" in pos:
-            start_x += dx
-            start_z += dz
-        else:
-            existing = [b for b in self.grid.blocks
-                        if b.x == start_x and b.z == start_z]
-            if existing and any(b.color == color for b in existing):
-                logger.info(
-                    "extend_row: start (%d,%d) already has %s, advancing one step %s",
-                    start_x, start_z, color, dir_name,
-                )
-                start_x += dx
-                start_z += dz
+        # ABLATION: same-color skip-forward rule disabled.
+        # Both CASE 1 (relative_to) and CASE 2 (absolute overlap) are
+        # skipped.  The extend_row starts exactly at the given position
+        # without any advancement.
 
         cx, cz = start_x, start_z
         for i in range(count):
