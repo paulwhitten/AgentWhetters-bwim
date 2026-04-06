@@ -544,51 +544,8 @@ class OpenAIPurpleAgent(AgentExecutor):
             # so fixes see resolved literal coordinates)
             steps = patch_chain_references(steps, parsed.start_grid)
 
-            # Step 3c: Auto-fix direction errors (deterministic)
-            steps = auto_fix_direction(parsed.instruction_text, steps)
-
-            # Step 3c2: Auto-fix each-end cap positions (deterministic)
-            steps = auto_fix_each_end_caps(
-                parsed.instruction_text, steps, parsed.start_grid
-            )
-
-            # Step 3c3: Auto-fix T-shape extend direction (deterministic)
-            steps = auto_fix_t_shape_extend(
-                parsed.instruction_text, steps, parsed.start_grid
-            )
-
-            # Step 3d: Verify plan against instruction
-            verification = verify_plan(
-                parsed.instruction_text, steps, len(parsed.start_grid.blocks)
-            )
-            if verification.has_critical:
-                logger.info(
-                    "Plan verification found critical issues, re-planning: %s",
-                    verification.correction_prompt()[:300],
-                )
-                # Re-plan with correction hints
-                steps = await self._planner.decompose(
-                    parsed.instruction_text,
-                    parsed.start_grid,
-                    parsed.speaker,
-                    structure_hint=structure_info.describe(),
-                    correction_hint=verification.correction_prompt(),
-                )
-                if not steps:
-                    logger.info("Re-plan returned no steps, falling back")
-                    return None
-                # Apply auto-fixes again after re-plan
-                steps = patch_chain_references(steps, parsed.start_grid)
-                steps = auto_fix_direction(parsed.instruction_text, steps)
-                steps = auto_fix_each_end_caps(
-                    parsed.instruction_text, steps, parsed.start_grid
-                )
-                steps = auto_fix_t_shape_extend(
-                    parsed.instruction_text, steps, parsed.start_grid
-                )
-                logger.info("Re-planned %d steps", len(steps))
-                for i, s in enumerate(steps):
-                    logger.info("  Re-step %d: %s %s count=%s pos=%s", i+1, s.action, s.color, s.count, s.position)
+            # ABLATION: Plan verifier disabled — skip all auto-fix and verify_plan.
+            # Steps 3c, 3c2, 3c3, and 3d are commented out.
 
             # ── Step 4: Safety net — resolve any Uncolored steps ──
             # Since we patch the instruction before the LLM call, Uncolored
