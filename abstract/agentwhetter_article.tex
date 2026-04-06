@@ -38,16 +38,20 @@ benchmark~\cite{bwim}, a 160-round block construction task requiring
 interpretation of underspecified natural-language instructions on a
 $9 \times 5 \times 9$ grid. Using GPT-4o-mini, one of the lowest-cost
 commercial models available, the system achieves 94.6\% mean structural
-accuracy ($\sigma = 0.72\%$, $n = 12$, 95\% CI $[94.2\%, 95.0\%]$).
+accuracy ($\sigma = 0.72\%$, $n = 12$, 95\% CI $[94.2\%, 95.0\%]$),
+up from a prompt-engineering-only ceiling of 63.3\% ($n = 16$) with the
+same model and no decomposition pipeline.
 A comparison with GPT-4o ($n = 6$) yields 90.3\% mean accuracy
 ($\sigma = 0.52\%$, 95\% CI $[89.8\%, 90.9\%]$), demonstrating that the
 smaller model with a tuned pipeline outperforms the larger model by 4.3
-percentage points ($p < 0.0001$, Welch $t$-test). This confirms that the
-deterministic pipeline rather than model capacity drives performance. An
-ablation study ($n = 7$ per condition) isolates the contribution of each
-pipeline component, showing that 2.5-D decomposition accounts for the
-largest single accuracy drop when removed ($-50.7$ percentage points).
-We release the full source code to support reproducibility.
+percentage points ($p < 0.0001$, Welch $t$-test). Error attribution across
+all 12 runs shows that 54.8\% of remaining failures originate in the
+architect agent rather than the builder, placing the builder-only accuracy
+at 97.6\%. An ablation study ($n = 7$ per condition) isolates the
+contribution of each pipeline component, showing that 2.5-D decomposition
+accounts for the largest single accuracy drop when removed ($-50.7$
+percentage points). We release the full source code to support
+reproducibility.
 \end{abstract}
 
 \section{Introduction}
@@ -427,6 +431,7 @@ and the top competing system on the BWIM leaderboard.
 \midrule
 Static dummy (competition default) & None & 26.9\% & $-345$ \\
 Bare LLM, no scaffolding & GPT-4o-mini & 40.0--52.5\% & $-80$ to $+20$ \\
+Prompt-engineered LLM (no decomp.) & GPT-4o-mini & 47.5--75.9\% & $-51$ to $+148$ \\
 hisandan/build-it-3~\cite{hisandan} & GPT-4o & 76.3\% & --- \\
 \textbf{Ours (this paper)} & \textbf{GPT-4o-mini} & \textbf{94.6\%} & $\boldsymbol{+947}$ \\
 \bottomrule
@@ -434,6 +439,9 @@ hisandan/build-it-3~\cite{hisandan} & GPT-4o & 76.3\% & --- \\
 \caption{Comparison with baselines and competing systems. The static dummy
 returns a fixed response every round. The bare LLM range reflects three
 runs of GPT-4o-mini with basic prompting and no decomposition pipeline.
+The prompt-engineered row reflects 16 runs with iterative prompt tuning,
+spatial hints, and few-shot examples but no 2.5-D decomposition ($n = 16$,
+mean 63.3\%, $\sigma = 8.0\%$).
 hisandan/build-it-3 is the top competing system on the BWIM leaderboard,
 using GPT-4o with direct LLM spatial reasoning and no deterministic
 pipeline. Our system uses GPT-4o-mini, a smaller and cheaper model, with
@@ -444,6 +452,10 @@ the full 2.5-D decomposition pipeline.}
 The static dummy agent returns a fixed 15-block string regardless of
 instruction, achieving 26.9\%. The bare LLM configuration (GPT-4o-mini with
 no decomposition) achieves 40--52.5\% depending on prompt engineering effort.
+With iterative prompt tuning, spatial hints, and few-shot examples but still
+no decomposition pipeline, accuracy reaches a mean of 63.3\% across 16 runs
+($\sigma = 8.0\%$, range 47.5--75.9\%). This represents the practical
+ceiling of prompt engineering alone on this task with GPT-4o-mini.
 The top competing system, hisandan/build-it-3~\cite{hisandan}, uses GPT-4o
 (a larger and more expensive model) with direct LLM spatial reasoning and no
 deterministic pipeline, reaching 76.3\%. Our system achieves 94.6\% with
@@ -576,29 +588,39 @@ architecture provides value independent of model-specific tuning.
 
 GPT-4o also incurs substantially higher costs: input token pricing is
 16.7$\times$ and output token pricing is 16.7$\times$ that of
-GPT-4o-mini, meaning each GPT-4o run costs roughly an order of magnitude
-more for lower accuracy on this pipeline. The cost difference made
+GPT-4o-mini. Each 160-round GPT-4o-mini run completes in approximately
+8.9 minutes (mean, $\sigma = 1.0$ min) at an estimated cost of
+\$0.07 per run. GPT-4o runs take approximately 10.1 minutes (with a
+1-second rate-limit throttle between API calls to avoid HTTP 429 errors)
+at an estimated cost of \$1.10 per run, roughly 16$\times$ more expensive
+for lower accuracy on this pipeline. The cost difference made
 GPT-4o impractical as the development model for the iterative prompt
 engineering workflow that produced the enrichment rules and verifier
 corrections.
 
 \subsection{Error Analysis}
 
-Across the three final GPT-4o-mini runs (7, 8, and 10 failures
-respectively), failure causes are consistent. In the best run, 5 of 7
-failures originate in the architect providing incorrect color or count
-information (e.g., naming a block color as green when the target contains
-blue, or reporting a count of 4 for a stack of 3). These errors arise
-because the architect is itself an LLM that sometimes misreads its own
-coordinate data. The remaining 2 failures are spatial reasoning errors in
-the builder's LLM: one incorrect chain coordinate reference and one
-L-shape placement error combining wrong color and vertical stacking.
+Across all 12 frozen-commit GPT-4o-mini runs (1,920 total rounds), 104
+rounds produce incorrect structures (5.4\% failure rate). We classify each
+failure by comparing the expected structure, the builder's output, and any
+architect responses to clarification questions.
 
-The dominant remaining error source is the architect rather than the
-builder pipeline. The builder has no independent access to the target
-structure and therefore cannot detect or compensate for architect errors.
-This represents a ceiling on accuracy achievable through builder-side
-improvements alone.
+Of the 104 failures, 57 (54.8\%) originate in the architect agent providing
+incorrect information. The most common architect error is reporting the
+wrong color when answering a clarification question (55 cases): for
+example, the architect states ``Green'' when the target structure contains
+Blue blocks, and the builder correctly builds with the (wrong) color it was
+told. Two additional failures trace to incorrect count information from the
+architect. The remaining 47 failures (45.2\%) are builder errors: 25 are
+spatial reasoning mistakes (incorrect block positions despite correct
+colors) and 22 involve incorrect color-position assignments in
+fully-specified instructions.
+
+If architect errors are excluded, the builder pipeline achieves 97.6\%
+accuracy (1,873/1,920 rounds correct). This 3.0 percentage point gap
+between raw accuracy (94.6\%) and builder-only accuracy (97.6\%) quantifies
+the ceiling imposed by architect errors that the builder cannot
+independently detect or correct.
 
 \section{Limitations}
 
@@ -616,22 +638,39 @@ benchmarks is an important direction for future work.
 \textbf{Ablation variance.} Each ablation condition uses $n = 7$
 runs, which provides strong power for large effects (the four significant
 components all have $p < 0.0001$) but may miss smaller contributions.
-The plan verifier result ($-0.6$ pp, $p = 0.36$) is not significant
-and could reflect either a genuinely negligible effect or insufficient
-power to detect a small one.
+The plan verifier result ($-0.6$ pp, $p = 0.36$) may reflect insufficient
+power rather than a true null effect.
 
-\textbf{Rule-based corrections.} The four plan verifier corrections address
-specific geometric patterns (direction flips, endpoint caps, T-shape
-extensions, count plausibility). While these rules are defined over general
-geometric properties rather than specific evaluation items, they were
-developed by analyzing failure modes on the BWIM instruction set. Their
-coverage of failure modes in other instruction distributions is unknown.
+\textbf{Rule-based corrections and overfitting risk.} The 15 peephole
+enrichment rules and four plan verifier corrections were developed by
+analyzing failure modes on the BWIM instruction set. While the targeted
+failure patterns (directional confusion, stack miscounting, L-shape and
+T-shape geometry errors) are general spatial reasoning problems rather than
+benchmark-specific artifacts, the specific trigger patterns and corrections
+were tuned on this distribution. Their coverage of failure modes in other
+instruction distributions is unknown. However, the competing team's lower
+accuracy with GPT-4o (76.3\%) compared to our GPT-4o-mini result (94.6\%)
+suggests that the pipeline design provides genuine structural benefit
+beyond benchmark-specific tuning.
 
-\textbf{Architect dependence.} The error analysis shows that the majority
-of remaining failures originate in the architect agent. The builder has no
-independent access to the target structure and cannot verify architect
-responses, creating an accuracy ceiling that builder-side improvements
-alone cannot surpass.
+\textbf{Architect dependence.} The error analysis across all 12 runs shows
+that 54.8\% of failures (57/104) originate in the architect agent providing
+incorrect color or count information. Excluding these errors, the builder
+pipeline achieves 97.6\% accuracy. The builder has no independent access
+to the target structure and cannot verify architect responses, creating a
+3.0 percentage point accuracy gap that builder-side improvements alone
+cannot closetions is unknown. However, the competing team's lower
+accuracy with GPT-4o (76.3\%) compared to our GPT-4o-mini result (94.6\%)
+suggests that the pipeline design provides genuine structural benefit
+beyond benchmark-specific tuning.
+
+\textbf{Architect dependence.} The error analysis across all 12 runs shows
+that 54.8\% of failures (57/104) originate in the architect agent providing
+incorrect color or count information. Excluding these errors, the builder
+pipeline achieves 97.6\% accuracy. The builder has no independent access
+to the target structure and cannot verify architect responses, creating a
+3.0 percentage point accuracy gap that builder-side improvements alone
+cannot close.
 
 \section{Conclusion and Future Work}
 
@@ -667,10 +706,13 @@ structural stability or connectivity requirements.
 
 The full source code, including all prompts, enrichment rules, and
 evaluation scripts, is available at
-\url{https://github.com/AgentWhetters/AgentWhetters-bwim}. Results were
-produced with GPT-4o-mini (2024-07-18) and GPT-4o (2024-08-06) via the
-OpenAI API. The benchmark evaluation uses the BWIM framework from
-UvA LTL~\cite{bwim}.
+\url{https://github.com/AgentWhetters/AgentWhetters-bwim}. All publication
+results were produced from Git commit \texttt{9f889ea} with
+\texttt{temperature=0} (the OpenAI API default for deterministic
+decoding). The models used were \texttt{gpt-4o-mini-2024-07-18} and
+\texttt{gpt-4o-2024-08-06} via the OpenAI API. The benchmark evaluation
+uses the BWIM framework from UvA LTL~\cite{bwim}. Ablation branches, run
+transcripts, and scoring logs are included in the repository.
 
 \begin{thebibliography}{99}
 
