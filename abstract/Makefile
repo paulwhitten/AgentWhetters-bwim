@@ -21,6 +21,7 @@ all: $(PNG) $(PDF) $(DEPS)
 %.pdf: %.tex $(DEPS)
 	@echo "BUILDING pdf $@ $<"
 	pdflatex $<
+	pdflatex $<
 
 clean:
 	rm -f $(PDF) *.log *.aux *.dvi *.bbl *.fls *.blg *.fdb_latexmk *.spl *.gz *.out
