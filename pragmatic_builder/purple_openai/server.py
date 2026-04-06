@@ -448,72 +448,16 @@ class OpenAIPurpleAgent(AgentExecutor):
         - Only one question per round.
         """
         try:
-            # ── Step 1: Pre-LLM underspec check on the raw instruction ──
+            # ── Step 1: Pre-LLM underspec check ──
+            # ABLATION: underspec questions disabled — never ask, always guess.
             heuristic_result = detect_underspec_heuristic(parsed.instruction_text)
-            logger.info("Heuristic: %s", heuristic_result.details)
+            logger.info("Heuristic (ablation, no-ask): %s", heuristic_result.details)
             inferred_count = override_count or heuristic_result.inferred_count or 3
 
-            # ── Compound: both color and count missing ──
-            if (heuristic_result.has_missing_color
-                    and heuristic_result.has_missing_number
-                    and ctx_id not in self._asked):
-                self._pending[ctx_id] = {
-                    "parsed": parsed,
-                    "original_input": original_input,
-                    "inferred_count": inferred_count,
-                    "ask_type": "compound",
-                    "uncounted_color": heuristic_result.uncounted_color,
-                }
-                question = (
-                    heuristic_result.suggested_compound_question
-                    or "What color should the unspecified blocks be, "
-                       "and how many blocks should be in that stack?"
-                )
-                logger.info("Both color and count missing, compound ask: %s", question)
-                return f"[ASK];{question}"
-
-            if heuristic_result.has_missing_color and ctx_id not in self._asked:
-                # Color is genuinely missing — ASK before calling the LLM.
-                # NOTE: self._asked is set in execute() AFTER the hard guard,
-                # not here, so the hard guard doesn't block the first ASK.
-                self._pending[ctx_id] = {
-                    "parsed": parsed,
-                    "original_input": original_input,
-                    "inferred_count": inferred_count,
-                    "ask_type": "color",
-                }
-                question = (
-                    heuristic_result.suggested_question
-                    or "What color should the unspecified blocks be?"
-                )
-                logger.info("Missing color detected pre-LLM, asking: %s", question)
-                return f"[ASK];{question}"
-
-            # Count is missing but color is known — ASK for the count.
-            if (heuristic_result.has_missing_number
-                    and not heuristic_result.has_missing_color
-                    and ctx_id not in self._asked
-                    and override_count is None):
-                self._pending[ctx_id] = {
-                    "parsed": parsed,
-                    "original_input": original_input,
-                    "inferred_count": inferred_count,
-                    "ask_type": "count",
-                    "uncounted_color": heuristic_result.uncounted_color,
-                }
-                question = (
-                    heuristic_result.suggested_count_question
-                    or "How many blocks should be in the unspecified stack?"
-                )
-                logger.info("Missing count detected pre-LLM, asking: %s", question)
-                return f"[ASK];{question}"
-
             if heuristic_result.has_missing_color:
-                # Already asked this round — fill with inferred color and continue
                 fill = heuristic_result.inferred_color or "Purple"
-                logger.warning(
-                    "Missing color but already asked this round, "
-                    "patching instruction with '%s'", fill,
+                logger.info(
+                    "Ablation: filling missing color with '%s' (no question)", fill,
                 )
                 patched = patch_instruction_with_color(
                     parsed.instruction_text, fill
