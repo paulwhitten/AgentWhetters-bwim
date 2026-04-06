@@ -282,7 +282,7 @@ prompt that includes coordinate examples and spatial rules.
     \includegraphics[width=0.9\textwidth]{figures/dimensional_collapse.pdf}
     \caption{2.5-D decomposition: the LLM planner generates 2D plans with
     $(x, z)$ coordinates and action types. The deterministic executor computes
-    vertical placement via column occupancy (Equation~\ref{eq:ystar}).}}
+    vertical placement via column occupancy (Equation~\ref{eq:ystar}).}
     \label{fig:pdffigure}
 \end{figure}
 
@@ -709,8 +709,9 @@ evaluation scripts, is available at
 \url{https://github.com/paulwhitten/AgentWhetters-bwim}. All publication
 results were produced from tag \texttt{v1.0.5} with
 \texttt{temperature=0} (the OpenAI API default for deterministic
-decoding). The models used were \texttt{gpt-4o-mini-2024-07-18} and
-\texttt{gpt-4o-2024-08-06} via the OpenAI API. The benchmark evaluation
+decoding) using models \texttt{gpt-4o-mini-\allowbreak{}2024-07-18} and
+\texttt{gpt-4o-\allowbreak{}2024-08-06} via the OpenAI~API.
+The benchmark evaluation
 uses the BWIM framework from UvA LTL~\cite{bwim}. Ablation branches, run
 transcripts, and scoring logs are included in the repository.
 
