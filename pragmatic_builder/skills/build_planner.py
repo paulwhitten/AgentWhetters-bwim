@@ -409,11 +409,11 @@ class BuildPlanner:
         if correction_hint:
             user_prompt += f"\n{correction_hint}\n"
 
-        # Adaptive enrichment: inject concept reminders for difficult phrases
-        enrichment = get_enrichments(instruction)
-        if enrichment:
-            user_prompt += f"\n{enrichment}\n"
-            logger.info("Enrichment injected for: %s", instruction[:80])
+        # Adaptive enrichment: ABLATION DISABLED
+        # enrichment = get_enrichments(instruction)
+        # if enrichment:
+        #     user_prompt += f"\n{enrichment}\n"
+        #     logger.info("Enrichment injected for: %s", instruction[:80])
 
         try:
             completion = await self._client.chat.completions.create(
