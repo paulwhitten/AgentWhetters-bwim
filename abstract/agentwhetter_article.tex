@@ -659,17 +659,6 @@ incorrect color or count information. Excluding these errors, the builder
 pipeline achieves 97.6\% accuracy. The builder has no independent access
 to the target structure and cannot verify architect responses, creating a
 3.0 percentage point accuracy gap that builder-side improvements alone
-cannot closetions is unknown. However, the competing team's lower
-accuracy with GPT-4o (76.3\%) compared to our GPT-4o-mini result (94.6\%)
-suggests that the pipeline design provides genuine structural benefit
-beyond benchmark-specific tuning.
-
-\textbf{Architect dependence.} The error analysis across all 12 runs shows
-that 54.8\% of failures (57/104) originate in the architect agent providing
-incorrect color or count information. Excluding these errors, the builder
-pipeline achieves 97.6\% accuracy. The builder has no independent access
-to the target structure and cannot verify architect responses, creating a
-3.0 percentage point accuracy gap that builder-side improvements alone
 cannot close.
 
 \section{Conclusion and Future Work}
@@ -717,6 +706,7 @@ transcripts, and scoring logs are included in the repository.
 \begin{thebibliography}{99}
 
 \bibitem{bwim}
+
 UvA LTL.
 \emph{Build What I Mean}, 2026.
 \url{https://github.com/ltl-uva/build_what_i_mean}
