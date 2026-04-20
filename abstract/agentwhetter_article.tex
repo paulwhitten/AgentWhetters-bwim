@@ -8,17 +8,21 @@
 \usepackage{enumitem}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{orcidlink}
 
 \title{2.5-D Decomposition for LLM Spatial Reasoning:\\Deterministic Execution of Two-Dimensional Plans\\in Three-Dimensional Block Construction}
 \author{
     Whitten, Paul\\
-  \texttt{pcw@case.edu}
+  \texttt{pcw@case.edu}\\
+  \orcidlink{0000-0002-7787-473X}\,0000-0002-7787-473X
   \and
   Chen, Li-Jen\\
-  \texttt{chenlijen@gmail.com}
+  \texttt{chenlijen@gmail.com}\\
+  \orcidlink{0009-0000-8811-646X}\,0009-0000-8811-646X
   \and
   Baddam, Sharath\\
-  \texttt{sbaddam@alumni.purdue.edu}
+  \texttt{sbaddam@alumni.purdue.edu}\\
+  \orcidlink{0009-0008-8750-0548}\,0009-0008-8750-0548
 }
 \date{March 2026}
 
@@ -27,31 +31,24 @@
 \maketitle
 
 \begin{abstract}
-Large language models struggle with three-dimensional coordinate arithmetic,
-producing frequent off-by-one errors, duplicate placements, and miscounted
-stack heights when asked to generate 3D block coordinates directly. We propose
-\emph{2.5-D decomposition}, a neuro-symbolic approach in which the LLM
-plans exclusively in a two-dimensional horizontal plane while a deterministic
-executor computes all vertical placement by scanning column occupancy. We
-evaluate this approach on the Build What I Mean (BWIM)
-benchmark~\cite{bwim}, a 160-round block construction task requiring
-interpretation of underspecified natural-language instructions on a
-$9 \times 5 \times 9$ grid. Using GPT-4o-mini, one of the lowest-cost
-commercial models available, the system achieves 94.6\% mean structural
-accuracy ($\sigma = 0.72\%$, $n = 12$, 95\% CI $[94.2\%, 95.0\%]$),
-up from a prompt-engineering-only ceiling of 63.3\% ($n = 16$) with the
-same model and no decomposition pipeline.
-A comparison with GPT-4o ($n = 6$) yields 90.3\% mean accuracy
-($\sigma = 0.52\%$, 95\% CI $[89.8\%, 90.9\%]$), demonstrating that the
-smaller model with a tuned pipeline outperforms the larger model by 4.3
-percentage points ($p < 0.0001$, Welch $t$-test). Error attribution across
-all 12 runs shows that 54.8\% of remaining failures originate in the
-architect agent rather than the builder, placing the builder-only accuracy
-at 97.6\%. An ablation study ($n = 7$ per condition) isolates the
-contribution of each pipeline component, showing that 2.5-D decomposition
-accounts for the largest single accuracy drop when removed ($-50.7$
-percentage points). We release the full source code to support
-reproducibility.
+Large language models produce frequent coordinate errors when generating
+3D block placements directly. We propose \emph{2.5-D decomposition}, a
+neuro-symbolic approach in which the LLM plans in a two-dimensional
+horizontal plane while a deterministic executor computes all vertical
+placement from column occupancy. On the Build What I Mean (BWIM)
+benchmark (160 rounds, $9 \times 5 \times 9$ grid), GPT-4o-mini achieves
+94.6\% mean structural accuracy ($n = 12$, $\sigma = 0.72\%$, 95\% CI
+$[94.2\%, 95.0\%]$), up from 63.3\% with prompt engineering alone
+($n = 16$). GPT-4o with the same pipeline scores 90.3\%
+($n = 6$, $p < 0.0001$), showing that the smaller model with a tuned
+pipeline outperforms the larger one by 4.3 percentage points. Error
+attribution places 54.8\% of remaining failures on the architect agent,
+yielding a builder-only accuracy of 97.6\%. An ablation study ($n = 7$
+per condition) confirms that 2.5-D decomposition accounts for the largest
+component contribution ($-50.7$ pp when removed). The pipeline transfers
+to edge hardware: an open-weight Nemotron-3 120B model on an NVIDIA
+Jetson Thor AGX achieves 95.0\% accuracy with no prompt modifications.
+Source code is publicly available.
 \end{abstract}
 
 \section{Introduction}
@@ -143,6 +140,24 @@ engine. The key difference is that our symbolic module must also handle the
 dimension the LLM does not reason about, rather than simply executing a
 program the neural module produces.
 
+\textbf{LLM-guided robotic execution.}
+A growing body of work constrains LLM outputs to what deterministic or
+learned modules can execute. Ahn et al.~\cite{saycan2022} ground
+language model plans in robotic affordances by scoring proposed actions
+against learned value functions, so the LLM selects only skills the
+robot can physically perform. Liang et al.~\cite{cap2022} have the LLM
+generate Python policy code that calls perception and control APIs
+directly, offloading spatial arithmetic to NumPy and Shapely rather
+than asking the model to compute coordinates. Huang et al.~
+\cite{innermonologue2022} close the loop by feeding environment
+feedback back to the LLM as natural language, allowing re-planning
+without retraining. Our approach shares the principle of restricting LLM
+outputs to a format that deterministic modules can process reliably. The
+difference is that we exploit a dimensional constraint specific to
+gravity-bound construction: rather than grounding arbitrary skills or
+generating executable code, we remove an entire spatial axis from the
+LLM's output space and compute it deterministically.
+
 \textbf{3D construction and navigation agents.}
 Recent work has applied LLM agents to 3D environments such as Minecraft.
 Wang et al.~\cite{voyager2023} present VOYAGER, an LLM-powered agent that
@@ -177,6 +192,18 @@ may optionally issue one clarification question before building. The scoring
 function awards $+10$ for a structurally correct build, $-10$ for an
 incorrect build, and $-5$ for each question asked, yielding an expected
 value of $+5$ for a correct build with one question.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.95\textwidth]{figures/tshape_example.pdf}
+    \caption{A benchmark round requiring T-shape recognition. Instruction:
+    ``Keeping the T shape, extend the existing green structure by adding
+    2 green blocks to the longer base. Then add 1 purple block to each
+    arm.'' The agent must identify the stem and arms of the existing
+    green T, extend the stem by two blocks, and place a purple block at
+    each arm endpoint. New blocks are marked with~$+$.}
+    \label{fig:tshape}
+\end{figure}
 
 \subsection{2.5-D Decomposition}
 
@@ -279,7 +306,7 @@ prompt that includes coordinate examples and spatial rules.
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=0.9\textwidth]{figures/dimensional_collapse.pdf}
+    \includegraphics[width=0.9\textwidth]{figures/25d_decomposition.pdf}
     \caption{2.5-D decomposition: the LLM planner generates 2D plans with
     $(x, z)$ coordinates and action types. The deterministic executor computes
     vertical placement via column occupancy (Equation~\ref{eq:ystar}).}
@@ -372,6 +399,29 @@ corrections cause no regressions on inputs where the LLM already succeeds.
 This process applies to any domain where LLMs make systematic,
 input-predictable errors.
 
+Table~\ref{tab:peephole} lists five representative rules from the set of
+15. Each rule matches a trigger phrase, identifies the systematic error
+the LLM produces for that phrase, and injects a targeted correction
+with a coordinate example.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}p{1.8cm}p{3.2cm}p{3.2cm}@{}}
+\toprule
+\textbf{Trigger} & \textbf{LLM failure mode} & \textbf{Injected correction} \\
+\midrule
+``in front of'' & Keeps same $z$, stacks vertically on the reference block & $z \mathbin{+}= 1$; $y$ resets to ground \\
+``each end'' after extend & Uses pre-extension endpoints instead of post-extension endpoints & Recompute min/max after all modifications \\
+L-shape extend & Extends through the junction, breaking the L & Extend away from junction at the far end \\
+Chain ref (``the red one'') & References the original block instead of the just-built structure & Track position of most recent step \\
+T-shape extend & Stacks vertically ($y\mathbin{+}=1$) instead of continuing the stem & Identify stem axis, extend past base at $y\mathbin{=}0$ \\
+\bottomrule
+\end{tabular}
+\caption{Representative peephole prompt optimization rules.}
+\label{tab:peephole}
+\end{table}
+
 To avoid overfitting to the evaluation set, all few-shot examples use
 different colors, counts, positions, and phrasing from the benchmark
 instructions. As a quantitative check, we measure unigram and bigram cosine
@@ -395,6 +445,12 @@ a comparison with GPT-4o (2024-08-06) to assess whether model scale
 provides additional gains beyond the deterministic pipeline. All prompt
 engineering and enrichment rules were developed against GPT-4o-mini.
 The GPT-4o runs use the identical pipeline with no model-specific tuning.
+We also evaluate NVIDIA Nemotron-3-Super-120B-A12B~\cite{nemotron2024},
+an open-weight model quantized to NVFP4, served locally via
+vLLM~\cite{vllm2023} on an NVIDIA Jetson Thor AGX Developer
+Kit~\cite{jetsonthor} (14-core Arm Neoverse V3AE CPU, 2560-core Blackwell
+GPU with fifth-generation Tensor Cores). No model-specific prompt tuning
+was performed for the Nemotron runs.
 
 \textbf{Metrics.} We report structural accuracy (percentage of rounds with
 correct block placement) and the composite score (accuracy-weighted with
@@ -402,6 +458,12 @@ question penalties). For the final GPT-4o-mini configuration, we report
 mean, standard deviation, and 95\% confidence interval across twelve
 independent runs. For GPT-4o, we report the same statistics across six
 independent runs.
+
+\textbf{Sampling configuration.} The build planner uses temperature 0.1.
+The fallback path and response formatter use temperature 0.2. The question
+answerer uses temperature 0.2. Top-$p$ is left at the API default (1.0)
+for all calls. No fixed random seed is set, so run-to-run variance
+reflects model sampling non-determinism.
 
 \textbf{Frozen codebase.} All reported runs use the same frozen code
 commit. No code changes were made between runs within each model condition.
@@ -484,7 +546,9 @@ Baseline (3D output)  & Direct LLM 3D generation & $+780$ & 81.9\% \\
 \bottomrule
 \end{tabular}
 \caption{Score progression across development iterations (160 rounds each,
-GPT-4o-mini). Each row adds one component to the previous configuration.}
+GPT-4o-mini). Each row adds one component to the previous configuration.
+Values are single runs ($n = 1$); see Table~\ref{tab:ablation} for
+statistically controlled measurements of individual component effects.}
 \label{tab:progression}
 \end{table}
 
@@ -554,13 +618,16 @@ GPT-4o-mini and GPT-4o, both using the identical pipeline.
 \midrule
 GPT-4o-mini & 12 & 94.6\% & 0.72\% & [94.2\%, 95.0\%] & +946.7 \\
 GPT-4o      &  6 & 90.3\% & 0.52\% & [89.8\%, 90.9\%] & +810.0 \\
+Nemotron-3$^\dagger$ & 1 & 95.0\% & --- & --- & +960 \\
 \bottomrule
+\multicolumn{6}{@{}l}{\footnotesize $^\dagger$Nemotron-3-Super-120B-A12B-NVFP4, local Jetson Thor AGX.}
 \end{tabular}
-\caption{Model comparison on the frozen pipeline: GPT-4o-mini vs.\ GPT-4o.
-All runs use the same code, scenario configuration, and prompts. The
-only difference is the underlying language model. A Welch two-sample
-$t$-test yields $t = 14.3$, $\mathit{df} = 13.5$, $p < 0.0001$,
-Cohen's $d = 6.8$.}
+\caption{Model comparison on the frozen pipeline. All runs use the same
+code, scenario configuration, and prompts. The only difference is the
+underlying language model. The Welch two-sample $t$-test between GPT-4o-mini
+and GPT-4o yields $t = 14.3$, $\mathit{df} = 13.5$, $p < 0.0001$,
+Cohen's $d = 6.8$. The Nemotron row is a single run ($n = 1$) and is not
+included in the significance test.}
 \label{tab:comparison}
 \end{table}
 
@@ -597,6 +664,45 @@ for lower accuracy on this pipeline. The cost difference made
 GPT-4o impractical as the development model for the iterative prompt
 engineering workflow that produced the enrichment rules and verifier
 corrections.
+
+\subsection{Edge Inference Latency}
+
+A single Nemotron-3-Super-120B-A12B run on a local NVIDIA Jetson Thor
+AGX achieved 95.0\% accuracy (+960 score), within 0.4 percentage points
+of the GPT-4o-mini cloud mean. The model ran at NVFP4 precision with no
+prompt modifications. Table~\ref{tab:latency} summarizes per-request
+latency across 158 planner calls (the remaining 2 rounds used cached
+fallbacks).
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}cccccc@{}}
+\toprule
+\textbf{Min} & \textbf{P25} & \textbf{Median} & \textbf{Mean} & \textbf{P95} & \textbf{Max} \\
+\midrule
+23.6 & 38.8 & 50.2 & 61.6 & 130.6 & 160.3 \\
+\bottomrule
+\end{tabular}
+\caption{Per-request inference latency on Jetson Thor AGX (seconds).}
+\label{tab:latency}
+\end{table}
+
+The median request completed in 50.2 seconds and 64\% of requests
+finished within 60 seconds. The distribution has a long tail: 8\% of
+requests exceeded 120 seconds, corresponding to instructions with
+complex spatial references (T-shapes, L-shapes) that produce longer
+reasoning traces under the model's chain-of-thought. Total LLM inference
+time for the 160-round run was 162 minutes, compared to approximately
+8.9 minutes for GPT-4o-mini via the cloud API, an 18$\times$ slowdown.
+The pipeline's 600-second timeout with exponential backoff accommodated
+all requests without failures.
+
+Compared to sub-second cloud API responses, the latency increase is
+substantial but acceptable for non-real-time construction tasks. The
+result demonstrates that the 2.5-D decomposition pipeline is not tightly
+coupled to a specific LLM provider and can transfer to locally hosted
+open-weight models on embedded AI hardware with minimal accuracy loss.
 
 \subsection{Error Analysis}
 
@@ -685,6 +791,12 @@ more output dimensions are deterministic functions of the others, a
 condition we term 2.5-D structure by analogy with Marr's 2.5-D
 sketch~\cite{marr1982}.
 
+The pipeline also transfers to edge hardware: a single Nemotron-3
+120B run on a local NVIDIA Jetson Thor AGX achieved 95.0\% accuracy
+(+960 score), within 0.4 percentage points of the GPT-4o-mini cloud
+mean, with no prompt modifications and a median per-request latency
+of 50.2 seconds.
+
 Future work includes evaluating the approach on additional spatial
 reasoning benchmarks, developing methods the builder can use to detect
 architect errors, and investigating whether the 2.5-D decomposition
@@ -698,7 +810,11 @@ evaluation scripts, is available at
 \url{https://github.com/paulwhitten/AgentWhetters-bwim}. All publication
 results were produced from tag \texttt{v1.0.5}
 using models \texttt{gpt-4o-mini-\allowbreak{}2024-07-18} and
-\texttt{gpt-4o-\allowbreak{}2024-08-06} via the OpenAI~API.
+\texttt{gpt-4o-\allowbreak{}2024-08-06} via the OpenAI~API, and
+\texttt{Nemotron-3-Super-\allowbreak{}120B-A12B-\allowbreak{}NVFP4}
+served locally via vLLM on an
+NVIDIA Jetson Thor AGX Developer Kit (Blackwell GPU, Arm
+Neoverse V3AE CPU).
 The benchmark evaluation
 uses the BWIM framework from UvA LTL~\cite{bwim}. Ablation branches, run
 transcripts, and scoring logs are included in the repository.
@@ -791,6 +907,37 @@ H.~Yuan et al.
 Plan4{MC}: Skill reinforcement learning and planning for open-world
 {Minecraft} tasks.
 \emph{arXiv:2303.16563}, 2023.
+
+\bibitem{saycan2022}
+M.~Ahn et al.
+Do as I can, not as I say: Grounding language in robotic affordances.
+\emph{arXiv:2204.01691}, 2022.
+
+\bibitem{cap2022}
+J.~Liang et al.
+Code as policies: Language model programs for embodied control.
+\emph{arXiv:2209.07753}, 2022.
+
+\bibitem{innermonologue2022}
+W.~Huang et al.
+Inner monologue: Embodied reasoning through planning with language models.
+\emph{arXiv:2207.05608}, 2022.
+
+\bibitem{nemotron2024}
+NVIDIA.
+\emph{Nemotron-3-Super-120B-A12B}, 2024.
+\url{https://huggingface.co/nvidia/Nemotron-3-Super-120B-A12B-NVFP4}
+
+\bibitem{jetsonthor}
+NVIDIA.
+\emph{Jetson Thor}, 2025.
+\url{https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/}
+
+\bibitem{vllm2023}
+W.~Kwon et al.
+Efficient memory management for large language model serving with
+{PagedAttention}.
+In \emph{Proc.\ SOSP}, 2023.
 
 \end{thebibliography}
 
