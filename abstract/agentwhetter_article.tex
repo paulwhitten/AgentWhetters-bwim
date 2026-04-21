@@ -47,7 +47,8 @@ yielding a builder-only accuracy of 97.6\%. An ablation study ($n = 7$
 per condition) confirms that 2.5-D decomposition accounts for the largest
 component contribution ($-50.7$ pp when removed). The pipeline transfers
 to edge hardware: an open-weight Nemotron-3 120B model on an NVIDIA
-Jetson Thor AGX achieves 95.0\% accuracy with no prompt modifications.
+Jetson Thor AGX achieves 94.5\% mean accuracy ($n = 6$,
+$\sigma = 0.83\%$) with no prompt modifications.
 Source code is publicly available.
 \end{abstract}
 
@@ -453,11 +454,31 @@ GPU with fifth-generation Tensor Cores). No model-specific prompt tuning
 was performed for the Nemotron runs.
 
 \textbf{Metrics.} We report structural accuracy (percentage of rounds with
-correct block placement) and the composite score (accuracy-weighted with
-question penalties). For the final GPT-4o-mini configuration, we report
+correct block placement), the composite score (accuracy-weighted with
+question penalties), and block-level F1. For each round, the predicted
+and target placements are represented as sets of (color, $x$, $y$, $z$)
+tuples. Each tuple identifies one block by its color and grid position.
+Precision is the fraction of predicted blocks that appear in the target
+set, recall is the fraction of target blocks that appear in the
+prediction, and F1 is their harmonic mean:
+%
+\[
+  \mathrm{F1} = \frac{2 \,|\, P \cap T \,|}{|P| + |T|}
+\]
+%
+where $P$ is the predicted set and $T$ is the target set. This is
+mathematically equivalent to the Dice coefficient~\cite{dice1945},
+originally introduced for ecological species co-occurrence and widely
+adopted in image segmentation and information
+retrieval~\cite{vanrijsbergen1979}. Applied to BWIM, F1 provides
+graded partial credit that accuracy alone cannot capture. For example,
+a round that places 6 of 7 blocks correctly receives accuracy 0 (the
+builds do not match) but F1 $= 12/13 \approx 0.92$, revealing a
+near-miss rather than a catastrophic failure.
+For the final GPT-4o-mini configuration, we report
 mean, standard deviation, and 95\% confidence interval across twelve
 independent runs. For GPT-4o, we report the same statistics across six
-independent runs.
+independent runs. For Nemotron-3, we report across six independent runs.
 
 \textbf{Sampling configuration.} The build planner uses temperature 0.1.
 The fallback path and response formatter use temperature 0.2. The question
@@ -612,22 +633,22 @@ GPT-4o-mini and GPT-4o, both using the identical pipeline.
 \begin{table}[ht]
 \centering
 \small
-\begin{tabular}{@{}lccccc@{}}
+\begin{tabular}{@{}lcccccc@{}}
 \toprule
-\textbf{Model} & $n$ & \textbf{Mean Acc.} & $\sigma$ & \textbf{95\% CI} & \textbf{Mean Score} \\
+\textbf{Model} & $n$ & \textbf{Mean Acc.} & $\sigma$ & \textbf{95\% CI} & \textbf{Mean Score} & \textbf{F1} \\
 \midrule
-GPT-4o-mini & 12 & 94.6\% & 0.72\% & [94.2\%, 95.0\%] & +946.7 \\
-GPT-4o      &  6 & 90.3\% & 0.52\% & [89.8\%, 90.9\%] & +810.0 \\
-Nemotron-3$^\dagger$ & 1 & 95.0\% & --- & --- & +960 \\
+GPT-4o-mini & 12 & 94.6\% & 0.72\% & [94.2\%, 95.0\%] & +946.7 & .987 \\
+GPT-4o      &  6 & 90.3\% & 0.52\% & [89.8\%, 90.9\%] & +810.0 & .975 \\
+Nemotron-3$^\dagger$ & 6 & 94.5\% & 0.83\% & [93.6\%, 95.4\%] & +943.3 & .981 \\
 \bottomrule
-\multicolumn{6}{@{}l}{\footnotesize $^\dagger$Nemotron-3-Super-120B-A12B-NVFP4, local Jetson Thor AGX.}
+\multicolumn{7}{@{}l}{\footnotesize $^\dagger$Nemotron-3-Super-120B-A12B-NVFP4, local Jetson Thor AGX.}
 \end{tabular}
 \caption{Model comparison on the frozen pipeline. All runs use the same
 code, scenario configuration, and prompts. The only difference is the
 underlying language model. The Welch two-sample $t$-test between GPT-4o-mini
 and GPT-4o yields $t = 14.3$, $\mathit{df} = 13.5$, $p < 0.0001$,
-Cohen's $d = 6.8$. The Nemotron row is a single run ($n = 1$) and is not
-included in the significance test.}
+Cohen's $d = 6.8$. The Nemotron-3 mean (94.5\%) is statistically
+indistinguishable from GPT-4o-mini (Welch $t = 0.26$, $p = 0.80$).}
 \label{tab:comparison}
 \end{table}
 
@@ -637,6 +658,14 @@ large by conventional standards. This result is the opposite of what model
 scaling alone would predict and supports the hypothesis that the
 deterministic pipeline, not model capacity, is the primary performance
 driver.
+
+Block-level F1 exceeds 0.97 for all three models, confirming that even
+incorrect rounds are typically near-misses (a single misplaced or missing
+block) rather than catastrophic failures. The distinction matters because
+accuracy is binary per round. Two systems can both score 95\% accuracy yet
+differ in how badly they fail on the remaining 5\% of rounds. High F1 on
+incorrect rounds indicates that the pipeline's errors are minor, typically
+a single block displaced by one grid cell or a color swap on one block.
 
 An important caveat is that all prompt engineering and enrichment rules
 were developed against GPT-4o-mini due to budget constraints. GPT-4o-mini
@@ -667,12 +696,13 @@ corrections.
 
 \subsection{Edge Inference Latency}
 
-A single Nemotron-3-Super-120B-A12B run on a local NVIDIA Jetson Thor
-AGX achieved 95.0\% accuracy (+960 score), within 0.4 percentage points
-of the GPT-4o-mini cloud mean. The model ran at NVFP4 precision with no
+Across six Nemotron-3-Super-120B-A12B runs on a local NVIDIA Jetson Thor
+AGX, mean accuracy was 94.5\% ($\sigma = 0.83\%$, +943 mean score),
+statistically indistinguishable from the GPT-4o-mini cloud mean
+(Welch $t = 0.26$, $p = 0.80$). The model ran at NVFP4 precision with no
 prompt modifications. Table~\ref{tab:latency} summarizes per-request
-latency across 158 planner calls (the remaining 2 rounds used cached
-fallbacks).
+latency from a representative run across 158 planner calls (the remaining
+2 rounds used cached fallbacks).
 
 \begin{table}[ht]
 \centering
@@ -791,11 +821,11 @@ more output dimensions are deterministic functions of the others, a
 condition we term 2.5-D structure by analogy with Marr's 2.5-D
 sketch~\cite{marr1982}.
 
-The pipeline also transfers to edge hardware: a single Nemotron-3
-120B run on a local NVIDIA Jetson Thor AGX achieved 95.0\% accuracy
-(+960 score), within 0.4 percentage points of the GPT-4o-mini cloud
-mean, with no prompt modifications and a median per-request latency
-of 50.2 seconds.
+The pipeline also transfers to edge hardware: Nemotron-3
+120B across six runs on a local NVIDIA Jetson Thor AGX achieved 94.5\%
+mean accuracy (+943 mean score), statistically indistinguishable from
+the GPT-4o-mini cloud mean, with no prompt modifications and a median
+per-request latency of 50.2 seconds.
 
 Future work includes evaluating the approach on additional spatial
 reasoning benchmarks, developing methods the builder can use to detect
@@ -804,20 +834,22 @@ principle applies to tasks with more complex physical constraints such as
 structural stability or connectivity requirements.
 
 \section*{Reproducibility}
+\begingroup\sloppy
 
 The full source code, including all prompts, enrichment rules, and
 evaluation scripts, is available at
-\url{https://github.com/paulwhitten/AgentWhetters-bwim}. All publication
-results were produced from tag \texttt{v1.0.5}
-using models \texttt{gpt-4o-mini-\allowbreak{}2024-07-18} and
-\texttt{gpt-4o-\allowbreak{}2024-08-06} via the OpenAI~API, and
-\texttt{Nemotron-3-Super-\allowbreak{}120B-A12B-\allowbreak{}NVFP4}
-served locally via vLLM on an
-NVIDIA Jetson Thor AGX Developer Kit (Blackwell GPU, Arm
-Neoverse V3AE CPU).
+\url{https://github.com/paulwhitten/AgentWhetters-bwim}.
+All publication results were produced from tag \texttt{v1.0.5} using
+models \texttt{gpt-4o-mini-}{\allowbreak}\texttt{2024-07-18}
+and \texttt{gpt-4o-}{\allowbreak}\texttt{2024-08-06} via the
+OpenAI~API, and
+\texttt{Nemotron-3-Super-}{\allowbreak}\texttt{120B-A12B-}{\allowbreak}\texttt{NVFP4}
+served locally via vLLM on an NVIDIA Jetson Thor AGX Developer Kit
+(Blackwell GPU, Arm Neoverse V3AE CPU).
 The benchmark evaluation
 uses the BWIM framework from UvA LTL~\cite{bwim}. Ablation branches, run
 transcripts, and scoring logs are included in the repository.
+\endgroup
 
 \begin{thebibliography}{99}
 
@@ -938,6 +970,16 @@ W.~Kwon et al.
 Efficient memory management for large language model serving with
 {PagedAttention}.
 In \emph{Proc.\ SOSP}, 2023.
+
+\bibitem{dice1945}
+L.~R.~Dice.
+Measures of the amount of ecologic association between species.
+\emph{Ecology}, 26(3):297--302, 1945.
+
+\bibitem{vanrijsbergen1979}
+C.~J.~Van~Rijsbergen.
+\emph{Information Retrieval}.
+Butterworth-Heinemann, 2nd edition, 1979.
 
 \end{thebibliography}
 
