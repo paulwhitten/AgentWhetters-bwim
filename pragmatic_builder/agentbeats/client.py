@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from uuid import uuid4
 
 import httpx
@@ -19,7 +20,7 @@ from a2a.types import (
 )
 
 
-DEFAULT_TIMEOUT = 1500
+DEFAULT_TIMEOUT = int(os.getenv("A2A_CLIENT_TIMEOUT", "86400"))
 
 
 def create_message(*, role: Role = Role.user, text: str, context_id: str | None = None) -> Message:

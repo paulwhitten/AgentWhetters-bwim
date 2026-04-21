@@ -66,6 +66,44 @@ export OPENAI_MODEL="gpt-4o-mini"
 AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 uv run python -m agentbeats.run_scenario scenario_openai_purple.toml --show-logs
 ```
 
+### Running with a Local/Edge LLM (vLLM)
+
+To run the purple agent against a self-hosted model served by vLLM (for example,
+Nemotron-3-Super-120B on an NVIDIA Jetson Thor or similar), set the following
+environment variables in your `.env` file:
+
+```bash
+# Green agent still uses the OpenAI API
+export OPENAI_API_KEY="your_openai_api_key_here"
+export OPENAI_MODEL="gpt-4o-mini"
+export OPENAI_API_KEY_GREEN="your_openai_api_key_here"
+export OPENAI_MODEL_GREEN="gpt-4o-mini"
+
+# Purple agent points at the local vLLM endpoint
+export OPENAI_API_KEY_PURPLE="dummy"
+export OPENAI_MODEL_PURPLE="/models/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+export OPENAI_BASE_URL_PURPLE="http://<vllm-host>:8000/v1"
+```
+
+| Variable | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | OpenAI key used by the green (evaluator) agent |
+| `OPENAI_MODEL` | Model name for the green agent (for example, `gpt-4o-mini`) |
+| `OPENAI_API_KEY_GREEN` | Separate green agent key (can be the same as `OPENAI_API_KEY`) |
+| `OPENAI_MODEL_GREEN` | Separate green agent model name |
+| `OPENAI_API_KEY_PURPLE` | API key for the purple agent endpoint. Set to `"dummy"` for local vLLM |
+| `OPENAI_MODEL_PURPLE` | Model path or name served by vLLM |
+| `OPENAI_BASE_URL_PURPLE` | Base URL of the vLLM server (for example, `http://192.168.1.41:8000/v1`) |
+
+Then run the scenario as usual:
+
+```bash
+cd pragmatic_builder
+source ../.env
+AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 \
+  uv run python -m agentbeats.run_scenario scenario_openai_purple.toml --show-logs
+```
+
 ### Run Scenario Agents + CLI Client (writes results.json)
 ```bash
 cd pragmatic_builder

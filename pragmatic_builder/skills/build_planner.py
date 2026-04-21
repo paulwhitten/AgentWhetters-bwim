@@ -8,10 +8,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from openai import AsyncOpenAI
+import httpx
+from openai import AsyncOpenAI, APITimeoutError, APIConnectionError
 
 from .grid import Grid, GridConfig
 from .prompt_enricher import get_enrichments
+from .vllm_compat import is_vllm_mode, strip_think_tags, vllm_extra_body
 
 logger = logging.getLogger(__name__)
 
@@ -416,7 +418,7 @@ class BuildPlanner:
             logger.info("Enrichment injected for: %s", instruction[:80])
 
         try:
-            completion = await self._client.chat.completions.create(
+            api_kwargs: dict = dict(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": DECOMPOSITION_SYSTEM_PROMPT},
@@ -426,12 +428,23 @@ class BuildPlanner:
                 max_tokens=2048,
                 response_format={"type": "json_object"},
             )
+            extra = vllm_extra_body()
+            if extra:
+                api_kwargs["extra_body"] = extra
+
+            completion = await self._client.chat.completions.create(**api_kwargs)
 
             content = (completion.choices[0].message.content or "").strip()
+            # Strip Nemotron <think> reasoning blocks before parsing JSON.
+            content = strip_think_tags(content)
             logger.info("Build planner raw output: %s", content[:500])
 
             return self._parse_response(content)
 
+        except (APITimeoutError, APIConnectionError,
+                httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError):
+            # Let transient network errors propagate so callers can retry.
+            raise
         except Exception as exc:
             logger.warning("Build planner failed: %s", exc)
             return []

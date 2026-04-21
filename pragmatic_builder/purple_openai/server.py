@@ -1,8 +1,10 @@
 import argparse
+import asyncio
 import logging
 import os
 import re
 import sys
+import time
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.events import EventQueue
@@ -10,12 +12,14 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from a2a.utils import new_agent_text_message
-from openai import AsyncOpenAI, AsyncAzureOpenAI
+import httpx
+from openai import AsyncOpenAI, AsyncAzureOpenAI, APITimeoutError, APIConnectionError
 import uvicorn
 
 # Add parent directory to path so skills package is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from skills.vllm_compat import is_vllm_mode, strip_think_tags, vllm_extra_body
 from skills.instruction_parser import parse_green_message, ParsedInstruction
 from skills.build_planner import BuildPlanner
 from skills.spatial_executor import SpatialExecutor, ExecutionError
@@ -106,6 +110,26 @@ def prepare_agent_card(url: str) -> AgentCard:
     )
 
 
+# Default timeout for LLM requests (seconds).  Thor under load can take
+# 60-120s per request; set high to avoid premature timeouts.
+_LLM_TIMEOUT = float(
+    os.getenv("OPENAI_TIMEOUT_PURPLE", "").strip()
+    or os.getenv("OPENAI_TIMEOUT", "600")
+)
+
+# How many times to retry a transient LLM error (timeout / connection reset).
+_LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+
+# Transient exception types from httpx / openai that are worth retrying.
+_TRANSIENT_ERRORS = (
+    APITimeoutError,
+    APIConnectionError,
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+)
+
+
 def _make_openai_client(api_key: str, base_url: str | None = None) -> AsyncOpenAI:
     """Create an OpenAI client, using Azure or GitHub Models when configured."""
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
@@ -115,8 +139,9 @@ def _make_openai_client(api_key: str, base_url: str | None = None) -> AsyncOpenA
             azure_endpoint=azure_endpoint,
             api_key=api_key,
             api_version=api_version,
+            timeout=_LLM_TIMEOUT,
         )
-    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+    return AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=_LLM_TIMEOUT)
 
 
 class OpenAIPurpleAgent(AgentExecutor):
@@ -137,10 +162,16 @@ class OpenAIPurpleAgent(AgentExecutor):
 
     def __init__(self, debug: bool = False):
         self._debug = debug
-        self._model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        self._api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        self._base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+        # _PURPLE vars let the purple agent use a different backend than the
+        # green agent (which reads the standard OPENAI_* vars unchanged).
+        self._model = (os.getenv("OPENAI_MODEL_PURPLE", "").strip()
+                       or os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        self._api_key = (os.getenv("OPENAI_API_KEY_PURPLE", "").strip()
+                         or os.getenv("OPENAI_API_KEY", "").strip())
+        self._base_url = (os.getenv("OPENAI_BASE_URL_PURPLE", "").strip()
+                          or os.getenv("OPENAI_BASE_URL", "").strip() or None)
         self._client = _make_openai_client(self._api_key, self._base_url)
+        logger.info("Purple agent: model=%s base_url=%s", self._model, self._base_url)
         # Azure deployments override the model name
         azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "").strip()
         if azure_deployment:
@@ -424,6 +455,19 @@ class OpenAIPurpleAgent(AgentExecutor):
         self._add_to_history(ctx_id, "instruction", parsed.instruction_text)
         self._add_to_history(ctx_id, "response", response)
 
+        # ── LAST RESORT: if response is empty [BUILD] and we have start
+        # blocks, return the existing structure.  Both score -10, but
+        # returning existing blocks is more defensible and may help the
+        # green agent's state tracking. ──
+        if response == "[BUILD]" and parsed.start_grid and parsed.start_grid.blocks:
+            existing = format_build_response(parsed.start_grid)
+            logger.warning(
+                "Empty [BUILD] replaced with existing %d start blocks "
+                "(LLM unavailable, returning start structure as fallback)",
+                len(parsed.start_grid.blocks),
+            )
+            response = existing
+
         await event_queue.enqueue_event(
             new_agent_text_message(response, context_id=context.context_id)
         )
@@ -525,12 +569,44 @@ class OpenAIPurpleAgent(AgentExecutor):
             logger.info("Structure analysis: %s", structure_info.describe()[:200])
 
             # ── Step 3: Decompose instruction into build steps via LLM ──
-            steps = await self._planner.decompose(
-                parsed.instruction_text,
-                parsed.start_grid,
-                parsed.speaker,
-                structure_hint=structure_info.describe(),
-            )
+            # Retry transient errors (Thor timeouts) with backoff.
+            steps = None
+            for attempt in range(_LLM_MAX_RETRIES + 1):
+                t0 = time.monotonic()
+                try:
+                    steps = await self._planner.decompose(
+                        parsed.instruction_text,
+                        parsed.start_grid,
+                        parsed.speaker,
+                        structure_hint=structure_info.describe(),
+                    )
+                    elapsed = time.monotonic() - t0
+                    if steps:
+                        logger.info(
+                            "Planner succeeded in %.1fs (attempt %d)",
+                            elapsed, attempt + 1,
+                        )
+                        break
+                    else:
+                        logger.info("Planner returned no steps (attempt %d)", attempt + 1)
+                        break  # Empty steps is not transient, don't retry
+                except _TRANSIENT_ERRORS as exc:
+                    elapsed = time.monotonic() - t0
+                    if attempt < _LLM_MAX_RETRIES:
+                        backoff = 2 ** attempt * 5
+                        logger.warning(
+                            "Planner transient error after %.1fs (attempt %d/%d): %s. "
+                            "Retrying in %ds...",
+                            elapsed, attempt + 1, _LLM_MAX_RETRIES + 1,
+                            type(exc).__name__, backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                    else:
+                        logger.error(
+                            "Planner transient error after %.1fs, all retries exhausted: %s",
+                            elapsed, type(exc).__name__,
+                        )
+                        return None
 
             if not steps:
                 logger.info("Planner returned no steps, falling back")
@@ -643,56 +719,92 @@ class OpenAIPurpleAgent(AgentExecutor):
             return None
 
     async def _direct_llm_call(self, user_input: str, ctx_id: str) -> str:
-        """Fallback: direct LLM call with the original system prompt."""
-        try:
-            messages = [
-                {"role": "system", "content": _FALLBACK_SYSTEM_PROMPT},
-            ]
+        """Fallback: direct LLM call with the original system prompt.
 
-            # Add sliding window of history for context
-            history = self._history.get(ctx_id, [])
-            for entry in history[-self._max_history:]:
-                if entry["type"] == "instruction":
-                    messages.append({"role": "user", "content": entry["content"]})
-                elif entry["type"] == "response":
-                    messages.append({"role": "assistant", "content": entry["content"]})
-                elif entry["type"] == "feedback":
-                    messages.append({"role": "user", "content": entry["content"]})
+        Retries up to _LLM_MAX_RETRIES times on transient errors (timeouts,
+        connection resets) with exponential backoff before giving up.
+        """
+        messages = [
+            {"role": "system", "content": _FALLBACK_SYSTEM_PROMPT},
+        ]
 
-            messages.append({"role": "user", "content": user_input})
+        # Add sliding window of history for context
+        history = self._history.get(ctx_id, [])
+        for entry in history[-self._max_history:]:
+            if entry["type"] == "instruction":
+                messages.append({"role": "user", "content": entry["content"]})
+            elif entry["type"] == "response":
+                messages.append({"role": "assistant", "content": entry["content"]})
+            elif entry["type"] == "feedback":
+                messages.append({"role": "user", "content": entry["content"]})
 
-            completion = await self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                temperature=0.2,
-                max_tokens=1024,
-            )
-            content = (completion.choices[0].message.content or "").strip()
+        messages.append({"role": "user", "content": user_input})
 
-            # Basic cleanup
-            content = content.rstrip("] \n")
-            if content.startswith("[ASK]"):
-                # Fallback LLM should never ASK — no pending state to
-                # rebuild from, so the answer would be wasted (-5 penalty
-                # with no benefit).  Return empty BUILD instead (-10 is
-                # better than -15).
-                logger.warning(
-                    "Fallback LLM tried to [ASK], converting to empty "
-                    "[BUILD]: %s", content[:100],
+        api_kwargs: dict = dict(
+            model=self._model,
+            messages=messages,
+            temperature=0.2,
+            max_tokens=1024,
+        )
+        extra = vllm_extra_body()
+        if extra:
+            api_kwargs["extra_body"] = extra
+
+        last_exc: Exception | None = None
+        for attempt in range(_LLM_MAX_RETRIES + 1):
+            try:
+                t0 = time.monotonic()
+                completion = await self._client.chat.completions.create(**api_kwargs)
+                elapsed = time.monotonic() - t0
+                content = (completion.choices[0].message.content or "").strip()
+                content = strip_think_tags(content)
+                logger.info(
+                    "Fallback LLM call succeeded in %.1fs (attempt %d)",
+                    elapsed, attempt + 1,
                 )
-                content = "[BUILD]"
-            elif not content.startswith("[BUILD]"):
-                logger.warning(
-                    "Fallback LLM response doesn't start with [BUILD]: %s",
-                    content[:100],
-                )
-                content = "[BUILD]"
 
-            return content
+                # Basic cleanup
+                content = content.rstrip("] \n")
+                if content.startswith("[ASK]"):
+                    logger.warning(
+                        "Fallback LLM tried to [ASK], converting to empty "
+                        "[BUILD]: %s", content[:100],
+                    )
+                    content = "[BUILD]"
+                elif not content.startswith("[BUILD]"):
+                    logger.warning(
+                        "Fallback LLM response doesn't start with [BUILD]: %s",
+                        content[:100],
+                    )
+                    content = "[BUILD]"
 
-        except Exception as exc:
-            logger.warning("Fallback LLM call failed: %s", exc)
-            return "[BUILD]"
+                return content
+
+            except _TRANSIENT_ERRORS as exc:
+                last_exc = exc
+                elapsed = time.monotonic() - t0
+                if attempt < _LLM_MAX_RETRIES:
+                    backoff = 2 ** attempt * 5  # 5s, 10s
+                    logger.warning(
+                        "Fallback LLM transient error after %.1fs (attempt %d/%d): %s. "
+                        "Retrying in %ds...",
+                        elapsed, attempt + 1, _LLM_MAX_RETRIES + 1,
+                        type(exc).__name__, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logger.error(
+                        "Fallback LLM transient error after %.1fs (attempt %d/%d): %s. "
+                        "All retries exhausted.",
+                        elapsed, attempt + 1, _LLM_MAX_RETRIES + 1,
+                        type(exc).__name__,
+                    )
+            except Exception as exc:
+                logger.warning("Fallback LLM call failed (non-transient): %s", exc)
+                return "[BUILD]"
+
+        logger.error("Fallback LLM all %d attempts failed: %s", _LLM_MAX_RETRIES + 1, last_exc)
+        return "[BUILD]"
 
     def _add_to_history(self, ctx_id: str, entry_type: str, content: str) -> None:
         """Add an entry to the conversation history with sliding window."""

@@ -53,14 +53,21 @@ class QuestionAnswerer:
             return DummyQuestionAnswerer()
         if mode != "openai":
             return None
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        # _GREEN vars let the green agent use a different backend than purple.
+        # Falls back to the standard OPENAI_* vars for backward compatibility.
+        api_key = (os.getenv("OPENAI_API_KEY_GREEN", "").strip()
+                   or os.getenv("OPENAI_API_KEY", "").strip())
         if not api_key:
             return None
-        model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "").strip() or "gpt-4o-mini"
-        base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+        model = (os.getenv("OPENAI_MODEL_GREEN", "").strip()
+                 or os.getenv("AZURE_OPENAI_DEPLOYMENT", "").strip()
+                 or "gpt-4o-mini")
+        base_url = (os.getenv("OPENAI_BASE_URL_GREEN", "").strip()
+                    or os.getenv("OPENAI_BASE_URL", "").strip() or None)
         timeout = float(os.getenv("OPENAI_TIMEOUT", "30"))
         temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
         max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "256"))
+        logger.info("Green QA agent: model=%s base_url=%s", model, base_url)
         return cls(
             model=model,
             api_key=api_key,
