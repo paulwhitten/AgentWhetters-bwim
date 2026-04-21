@@ -199,7 +199,7 @@ value of $+5$ for a correct build with one question.
     \includegraphics[width=0.95\textwidth]{figures/tshape_example.pdf}
     \caption{A benchmark round requiring T-shape recognition. Instruction:
     ``Keeping the T shape, extend the existing green structure by adding
-    2 green blocks to the longer base. Then add 1 purple block to each
+    two green blocks to the longer base. Then add one purple block to each
     arm.'' The agent must identify the stem and arms of the existing
     green T, extend the stem by two blocks, and place a purple block at
     each arm endpoint. New blocks are marked with~$+$.}
@@ -472,7 +472,7 @@ originally introduced for ecological species co-occurrence and widely
 adopted in image segmentation and information
 retrieval~\cite{vanrijsbergen1979}. Applied to BWIM, F1 provides
 graded partial credit that accuracy alone cannot capture. For example,
-a round that places 6 of 7 blocks correctly receives accuracy 0 (the
+a round that places six of seven blocks correctly receives accuracy 0 (the
 builds do not match) but F1 $= 12/13 \approx 0.92$, revealing a
 near-miss rather than a catastrophic failure.
 For the final GPT-4o-mini configuration, we report
@@ -515,7 +515,7 @@ and the top competing system on the BWIM leaderboard.
 Static dummy (competition default) & None & 26.9\% & $-345$ \\
 Bare LLM, no scaffolding & GPT-4o-mini & 40.0--52.5\% & $-80$ to $+20$ \\
 Prompt-engineered LLM (no decomp.) & GPT-4o-mini & 47.5--75.9\% & $-51$ to $+148$ \\
-hisandan/build-it-3~\cite{hisandan} & GPT-4o & 76.3\% & --- \\
+hisandan/build-it-3~\cite{hisandan} & GPT-4o & 76.3\% & $+765$ \\
 \textbf{Ours (this paper)} & \textbf{GPT-4o-mini} & \textbf{94.6\%} & $\boldsymbol{+947}$ \\
 \bottomrule
 \end{tabular}
@@ -527,7 +527,9 @@ spatial hints, and few-shot examples but no 2.5-D decomposition ($n = 16$,
 mean 63.3\%, $\sigma = 8.0\%$).
 hisandan/build-it-3 is the top competing system on the BWIM leaderboard,
 using GPT-4o with direct LLM spatial reasoning and no deterministic
-pipeline. Our system uses GPT-4o-mini, a smaller and cheaper model, with
+pipeline; its result is from a single public leaderboard submission
+($n = 1$), and the score was computed from the public run log.
+Our system uses GPT-4o-mini, a smaller and cheaper model, with
 the full 2.5-D decomposition pipeline.}
 \label{tab:baselines}
 \end{table}
@@ -702,7 +704,7 @@ statistically indistinguishable from the GPT-4o-mini cloud mean
 (Welch $t = 0.26$, $p = 0.80$). The model ran at NVFP4 precision with no
 prompt modifications. Table~\ref{tab:latency} summarizes per-request
 latency from a representative run across 158 planner calls (the remaining
-2 rounds used cached fallbacks).
+two rounds used cached fallbacks).
 
 \begin{table}[ht]
 \centering
