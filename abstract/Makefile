@@ -1,7 +1,7 @@
 
 PNG=$(patsubst %.puml,%.png,$(wildcard *.puml))
 BIB=$(wildcard *.bib)
-DEPS=$(patsubst %.tex,%.bbl,$(wildcard *.tex))
+DEPS=$(if $(BIB),$(patsubst %.tex,%.bbl,$(wildcard *.tex)),)
 PDF=$(patsubst %.tex,%.pdf,$(wildcard *.tex))
 
 all: $(PNG) $(PDF) $(DEPS)
@@ -21,6 +21,7 @@ all: $(PNG) $(PDF) $(DEPS)
 %.pdf: %.tex $(DEPS)
 	@echo "BUILDING pdf $@ $<"
 	pdflatex $<
+	pdflatex $<
 
 clean:
-	rm sn-article.pdf explainable_hw_trojan.pdf *.log *.aux *.dvi *.bbl *.fls *.blg *.fdb_latexmk *.spl *.gz *.out
+	rm -f $(PDF) *.log *.aux *.dvi *.bbl *.fls *.blg *.fdb_latexmk *.spl *.gz *.out

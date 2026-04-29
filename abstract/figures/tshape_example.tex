@@ -1,0 +1,147 @@
+\documentclass[border=10pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{3d,calc,arrows.meta}
+\usepackage{xcolor}
+\definecolor{bwimpurple}{HTML}{800080}
+
+\pgfmathsetmacro{\blocksize}{0.55}
+
+\begin{document}
+\begin{tikzpicture}[>=Stealth]
+
+% ============================================================
+% Shared block-drawing macro
+% ============================================================
+\newcommand{\block}[4]{% x, y, z, color
+    \pgfmathsetmacro{\bx}{#1*\blocksize}
+    \pgfmathsetmacro{\by}{#2*\blocksize}
+    \pgfmathsetmacro{\bz}{#3*\blocksize}
+    \pgfmathsetmacro{\bs}{\blocksize}
+    % Top face (lightest)
+    \fill[#4!50!white, draw=#4!60!black, line width=0.3pt]
+        (\bx, \by+\bs, \bz) --
+        (\bx+\bs, \by+\bs, \bz) --
+        (\bx+\bs, \by+\bs, \bz+\bs) --
+        (\bx, \by+\bs, \bz+\bs) -- cycle;
+    % Front face (medium)
+    \fill[#4!70!white, draw=#4!60!black, line width=0.3pt]
+        (\bx, \by, \bz+\bs) --
+        (\bx+\bs, \by, \bz+\bs) --
+        (\bx+\bs, \by+\bs, \bz+\bs) --
+        (\bx, \by+\bs, \bz+\bs) -- cycle;
+    % Right face (darkest)
+    \fill[#4!40!black, draw=#4!60!black, line width=0.3pt]
+        (\bx+\bs, \by, \bz) --
+        (\bx+\bs, \by, \bz+\bs) --
+        (\bx+\bs, \by+\bs, \bz+\bs) --
+        (\bx+\bs, \by+\bs, \bz) -- cycle;
+}
+
+% ============================================================
+% LEFT: START STRUCTURE (Before)
+% ============================================================
+
+\begin{scope}[shift={(-1.5, -2.0)},
+    x={(0.55cm, -0.28cm)},
+    y={(0cm, 0.7cm)},
+    z={(-0.55cm, -0.28cm)},
+]
+    \pgfmathsetmacro{\gs}{9*\blocksize}
+
+    % Ground plane grid — 9x9
+    \foreach \i in {0,...,9} {
+        \pgfmathsetmacro{\pos}{\i*\blocksize}
+        \draw[gray!25, very thin] (\pos, 0, 0) -- (\pos, 0, \gs);
+        \draw[gray!25, very thin] (0, 0, \pos) -- (\gs, 0, \pos);
+    }
+    \draw[gray!50, thin] (0,0,0) -- (\gs,0,0) -- (\gs,0,\gs) -- (0,0,\gs) -- cycle;
+
+    % T-bar: green blocks at z=3, x=3,4,5 (draw back-to-front)
+    \block{3}{0}{3}{green!80!black}
+    \block{4}{0}{3}{green!80!black}
+    \block{5}{0}{3}{green!80!black}
+
+    % Stem: green blocks at x=4, z=4,5,6 (draw back-to-front)
+    \block{4}{0}{4}{green!80!black}
+    \block{4}{0}{5}{green!80!black}
+    \block{4}{0}{6}{green!80!black}
+
+    % Axes
+    \draw[->, thick, black!70] (0,0,0) -- (10.5*\blocksize, 0, 0)
+        node[right, font=\small] {$x$};
+    \draw[->, thick, black!70] (0,0,0) -- (0, 3*\blocksize, 0)
+        node[above, font=\small] {$y$};
+    \draw[->, thick, black!70] (0,0,0) -- (0, 0, 10.5*\blocksize)
+        node[left, font=\small] {$z$};
+
+\end{scope}
+
+% ============================================================
+% ARROW between start and target
+% ============================================================
+\draw[->, very thick, black!60, line width=1.5pt] (1.5, -0.5) -- (3.0, -0.5)
+    node[midway, above, font=\sffamily\small] {build};
+
+% ============================================================
+% RIGHT: TARGET STRUCTURE (After)
+% ============================================================
+
+\begin{scope}[shift={(6.0, -2.0)},
+    x={(0.55cm, -0.28cm)},
+    y={(0cm, 0.7cm)},
+    z={(-0.55cm, -0.28cm)},
+]
+    \pgfmathsetmacro{\gs}{9*\blocksize}
+
+    % Ground plane grid — 9x9
+    \foreach \i in {0,...,9} {
+        \pgfmathsetmacro{\pos}{\i*\blocksize}
+        \draw[gray!25, very thin] (\pos, 0, 0) -- (\pos, 0, \gs);
+        \draw[gray!25, very thin] (0, 0, \pos) -- (\gs, 0, \pos);
+    }
+    \draw[gray!50, thin] (0,0,0) -- (\gs,0,0) -- (\gs,0,\gs) -- (0,0,\gs) -- cycle;
+
+    % Purple cap — left arm at (2,0,3)
+    \block{2}{0}{3}{bwimpurple}
+
+    % T-bar: green blocks at z=3, x=3,4,5 (original)
+    \block{3}{0}{3}{green!80!black}
+    \block{4}{0}{3}{green!80!black}
+    \block{5}{0}{3}{green!80!black}
+
+    % Purple cap — right arm at (6,0,3)
+    \block{6}{0}{3}{bwimpurple}
+
+    % Stem: green blocks at x=4, z=4,5,6 (original)
+    \block{4}{0}{4}{green!80!black}
+    \block{4}{0}{5}{green!80!black}
+    \block{4}{0}{6}{green!80!black}
+
+    % Stem extension: green blocks at x=4, z=7,8 (new)
+    \block{4}{0}{7}{green!80!black}
+    \block{4}{0}{8}{green!80!black}
+
+    % Highlight new blocks with small markers
+    % Stem extensions — right (dark) face center
+    \node[font=\tiny\bfseries, white] at
+        (4*\blocksize+\blocksize, 0.5*\blocksize, 7*\blocksize+0.5*\blocksize) {+};
+    \node[font=\tiny\bfseries, white] at
+        (4*\blocksize+\blocksize, 0.5*\blocksize, 8*\blocksize+0.5*\blocksize) {+};
+    % Purple caps — front face center
+    \node[font=\tiny\bfseries, white] at
+        (2*\blocksize+0.5*\blocksize, 0.5*\blocksize, 3*\blocksize+\blocksize) {+};
+    \node[font=\tiny\bfseries, white] at
+        (6*\blocksize+0.5*\blocksize, 0.5*\blocksize, 3*\blocksize+\blocksize) {+};
+
+    % Axes
+    \draw[->, thick, black!70] (0,0,0) -- (10.5*\blocksize, 0, 0)
+        node[right, font=\small] {$x$};
+    \draw[->, thick, black!70] (0,0,0) -- (0, 3*\blocksize, 0)
+        node[above, font=\small] {$y$};
+    \draw[->, thick, black!70] (0,0,0) -- (0, 0, 10.5*\blocksize)
+        node[left, font=\small] {$z$};
+
+\end{scope}
+
+\end{tikzpicture}
+\end{document}
