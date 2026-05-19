@@ -36,19 +36,17 @@ Large language models produce frequent coordinate errors when generating
 neuro-symbolic approach in which the LLM plans in a two-dimensional
 horizontal plane while a deterministic executor computes all vertical
 placement from column occupancy. On the Build What I Mean (BWIM)
-benchmark (160 rounds, $9 \times 5 \times 9$ grid), GPT-4o-mini achieves
-94.6\% mean structural accuracy ($n = 12$, $\sigma = 0.72\%$, 95\% CI
-$[94.2\%, 95.0\%]$), up from 63.3\% with prompt engineering alone
-($n = 16$). GPT-4o with the same pipeline scores 90.3\%
-($n = 6$, $p < 0.0001$), showing that the smaller model with a tuned
-pipeline outperforms the larger one by 4.3 percentage points. Error
-attribution places 54.8\% of remaining failures on the architect agent,
-yielding a builder-only accuracy of 97.6\%. An ablation study ($n = 7$
-per condition) confirms that 2.5-D decomposition accounts for the largest
-component contribution ($-50.7$ pp when removed). The pipeline transfers
+benchmark (160 rounds), GPT-4o-mini achieves 94.6\% mean structural
+accuracy across 12 independent runs, within 3.0 percentage points of the
+97.6\% ceiling imposed by architect-agent errors that no builder-side
+improvement can address. This outperforms both GPT-4o at 90.3\%
+and the best competing system at 76.3\%. A controlled
+ablation confirms that 2.5-D decomposition is the dominant contributor,
+accounting for 50.7 percentage points of accuracy. The pipeline transfers
 to edge hardware: an open-weight Nemotron-3 120B model on an NVIDIA
-Jetson Thor AGX achieves 94.5\% mean accuracy ($n = 6$,
-$\sigma = 0.83\%$) with no prompt modifications.
+Jetson Thor AGX achieves 94.5\% mean accuracy with no prompt
+modifications. A transfer experiment on 500 IGLU collaborative building
+tasks confirms the effect generalizes beyond the primary benchmark.
 Source code is publicly available.
 \end{abstract}
 
@@ -61,7 +59,9 @@ al.~\cite{bang2023} document systematic failures in directional and chain
 references for GPT-family models. These difficulties are especially
 pronounced in 3D construction tasks where the model must track block
 occupancy across three axes and chain height calculations across stacking
-operations.
+operations. These findings are consistent with LeCun's observation that
+LLMs lack internal world models for enforcing physical
+constraints~\cite{lecun2022}.
 
 One response is to scale to larger models, but this incurs substantial cost
 and latency and does not eliminate spatial errors. An alternative, motivated
@@ -72,7 +72,7 @@ handles exact coordinate arithmetic.
 
 This paper investigates a specific form of this decomposition that we call
 \emph{2.5-D decomposition}: the construction grid is a 2.5-D
-domain~\cite{marr1982} in which the vertical axis is a deterministic
+domain~\cite{marr2010} in which the vertical axis is a deterministic
 function of horizontal position and column occupancy, so the LLM plans
 exclusively in a two-dimensional horizontal plane $(x, z)$ while a
 deterministic executor computes all vertical ($y$-axis) placement.
@@ -89,13 +89,32 @@ cost of clarification questions, creating a decision-theoretic trade-off
 between asking and guessing. We report results with GPT-4o-mini and GPT-4o,
 present a component ablation, and analyze remaining failure modes.
 
+This principle extends beyond block construction to any autonomous system
+where physical constraints make some output dimensions computable from
+others. In robotic construction and assembly, gravity determines stacking
+order. In terrain-following UAV path planning, altitude is a function of
+horizontal position and terrain data. In automated equipment maintenance,
+physical constraints on part placement reduce the effective degrees of
+freedom. The common pattern is that removing deterministic dimensions from
+the language model's output space improves reliability without reducing
+the system's capability.
+
+An important ceiling on this benchmark is the architect agent that
+answers clarification questions: it is itself an LLM and sometimes
+provides incorrect information. Error analysis shows that 54.8\% of
+residual failures originate in the architect, bounding the achievable
+accuracy at approximately 97.6\% regardless of builder quality. Our
+94.6\% result leaves only 3.0 percentage points of real headroom.
+
 The contributions of this paper are: (1) a formal characterization of
 2.5-D decomposition for LLM spatial planning, recognizing that
 gravity-constrained construction is a 2.5-D domain where one axis is
-deterministically computable, (2) a peephole prompt optimization
-methodology~\cite{mckeeman1965} in which known LLM failure patterns are
+deterministically computable, (2) an adaptive prompt enrichment
+methodology in which known LLM failure patterns are
 matched in the input and targeted corrections are injected before
-generation, (3) an empirical demonstration that this approach enables a
+generation, complemented by a plan verifier that applies peephole
+optimization~\cite{mckeeman1965} to the LLM's output,
+(3) an empirical demonstration that this approach enables a
 small model (GPT-4o-mini) to outperform a frontier model (GPT-4o) on block
 construction accuracy with statistically significant results ($n = 12$ and
 $n = 6$, $p < 0.0001$), and (4) a decision-theoretic framework for
@@ -180,7 +199,7 @@ rather than high-level planning errors.
 
 The BWIM benchmark defines a block construction task on a discrete grid
 $\mathcal{G} = \{0, \ldots, 8\} \times \{0, \ldots, 4\} \times \{0, \ldots, 8\}$,
-where the axes correspond to width ($x$), height ($y$), and depth ($z$).
+where the axes correspond to width ($x$), height ($y$, vertical), and depth ($z$).
 Each cell $(x, y, z) \in \mathcal{G}$ is either empty or occupied by a block
 of color $c \in \mathcal{C} = \{\text{red}, \text{blue}, \text{green},
 \text{orange}, \text{yellow}, \text{purple}\}$. A grid state is a partial
@@ -209,10 +228,10 @@ value of $+5$ for a correct build with one question.
 \subsection{2.5-D Decomposition}
 
 The BWIM construction grid is a 2.5-D domain in the sense of
-Marr~\cite{marr1982}: the vertical axis is not a free variable but a
+Marr~\cite{marr2010}: the vertical axis is not a free variable but a
 deterministic function of horizontal position and existing occupancy,
 analogous to 2.5-D machining where the tool path is free in two axes but
-the third changes only in discrete, computed steps~\cite{nayak2015}.
+the third changes only in discrete, computed steps~\cite{held1991}.
 Concretely, the grid enforces a gravity constraint: a block at
 $(x, y, z)$ can only exist if $y = 0$ or a block exists at $(x, y-1, z)$.
 This means the vertical coordinate of any new block is fully determined by
@@ -374,36 +393,37 @@ heuristic cascade: copy the height of an adjacent stack, use the tallest
 stack on the grid, or default to three (the modal count in the benchmark,
 observed in 53\% of count-underspecified trials).
 
-\section{Peephole Prompt Optimization}
+\section{Adaptive Prompt Enrichment}
 
 Certain spatial concepts, including ``each end,'' chain references,
 L-shape extensions, and T-shape junctions, are disproportionately
-error-prone for GPT-4o-mini. These errors are not random: specific input
-patterns reliably trigger specific failure modes. Our approach treats
-these failures as analogous to suboptimal instruction sequences in compiled
-code. In compiler design, a peephole optimizer scans a small window of
-generated instructions, matches known suboptimal patterns, and replaces
-them with more efficient sequences~\cite{mckeeman1965}. We apply the same
-principle to prompts: the system scans each instruction against a library
-of 15 pattern-matching rules, and when a rule fires, a targeted correction
-with a worked example is injected into the prompt immediately before the
-LLM call so that it falls within the model's local attention window.
+error-prone for GPT-4o-mini. These errors are systematic: specific input
+patterns reliably trigger specific failure modes. We scan each instruction
+against 15 pattern-matching rules before the LLM call. When a rule fires,
+a targeted correction with a worked example is injected into the prompt.
 Rules are independent and composable; multiple may fire on a single
 instruction.
 
-This methodology is domain-transferable and follows five steps: (1) run
-systematic error analysis to identify recurring failure modes, (2) classify
-failures by their input triggers, (3) write targeted micro-corrections with
-worked examples for each failure class, (4) inject corrections dynamically
-based on pattern matching against the input, and (5) validate that
-corrections cause no regressions on inputs where the LLM already succeeds.
-This process applies to any domain where LLMs make systematic,
+This methodology is domain-transferable: identify recurring failure
+modes, classify by input trigger, write micro-corrections with worked
+examples, inject dynamically via pattern matching, and validate against
+regressions. It applies to any domain where LLMs make systematic,
 input-predictable errors.
 
-Table~\ref{tab:peephole} lists five representative rules from the set of
-15. Each rule matches a trigger phrase, identifies the systematic error
-the LLM produces for that phrase, and injects a targeted correction
+Table~\ref{tab:enrichment} lists five representative rules from the set of
+15. Each rule fires before the LLM call, matches a trigger phrase to
+the systematic error the LLM produces, and injects a targeted correction
 with a coordinate example.
+
+The plan verifier (stage 4) complements enrichment with post-generation
+correction in the style of a compiler peephole
+optimizer~\cite{mckeeman1965}. Where a peephole pass matches known
+suboptimal instruction sequences in generated code and replaces them,
+the plan verifier matches known-bad patterns in the LLM's output plan
+and rewrites them deterministically. Four correction passes handle
+direction reversals, stale endpoint references, T-shape axis errors,
+and chain reference coordinate drift. If critical errors remain after
+these rewrites, the system triggers a full re-plan with diagnostic hints.
 
 \begin{table}[ht]
 \centering
@@ -419,8 +439,8 @@ Chain ref (``the red one'') & References the original block instead of the just-
 T-shape extend & Stacks vertically ($y\mathbin{+}=1$) instead of continuing the stem & Identify stem axis, extend past base at $y\mathbin{=}0$ \\
 \bottomrule
 \end{tabular}
-\caption{Representative peephole prompt optimization rules.}
-\label{tab:peephole}
+\caption{Representative adaptive prompt enrichment rules (5 of 15).}
+\label{tab:enrichment}
 \end{table}
 
 To avoid overfitting to the evaluation set, all few-shot examples use
@@ -445,7 +465,8 @@ selection or component ablation.
 a comparison with GPT-4o (2024-08-06) to assess whether model scale
 provides additional gains beyond the deterministic pipeline. All prompt
 engineering and enrichment rules were developed against GPT-4o-mini.
-The GPT-4o runs use the identical pipeline with no model-specific tuning.
+The GPT-4o runs swap only the model identifier; all prompts,
+enrichment rules, temperature settings, and pipeline logic are unchanged.
 We also evaluate NVIDIA Nemotron-3-Super-120B-A12B~\cite{nemotron2024},
 an open-weight model quantized to NVFP4, served locally via
 vLLM~\cite{vllm2023} on an NVIDIA Jetson Thor AGX Developer
@@ -502,51 +523,40 @@ question in the current round to prevent redundant queries.
 
 \subsection{Comparison with Baselines and Competing Systems}
 
-Table~\ref{tab:baselines} compares our system against available baselines
-and the top competing system on the BWIM leaderboard.
+Table~\ref{tab:baselines} shows our system compared with baselines and
+the top competing system on the BWIM leaderboard.
 
 \begin{table}[ht]
 \centering
 \small
-\begin{tabular}{@{}llcc@{}}
+\begin{tabular}{@{}l@{\hskip 6pt}lcc@{}}
 \toprule
-\textbf{System} & \textbf{Model} & \textbf{Accuracy} & \textbf{Score} \\
+\textbf{System} & \textbf{Model} & \textbf{Acc.} & \textbf{Score} \\
 \midrule
-Static dummy (competition default) & None & 26.9\% & $-345$ \\
-Bare LLM, no scaffolding & GPT-4o-mini & 40.0--52.5\% & $-80$ to $+20$ \\
-Prompt-engineered LLM (no decomp.) & GPT-4o-mini & 47.5--75.9\% & $-51$ to $+148$ \\
-hisandan/build-it-3~\cite{hisandan} & GPT-4o & 76.3\% & $+765$ \\
-\textbf{Ours (this paper)} & \textbf{GPT-4o-mini} & \textbf{94.6\%} & $\boldsymbol{+947}$ \\
+BWIM baseline~\cite{baseline} & None & 26.9\% & $-345$ \\
+Ours without 2.5-D decomp. & 4o-mini & 43.8\% & $-51$ \\
+hisandan/build-it-3~\cite{hisandan} & 4o & 76.3\% & $+765$ \\
+\textbf{Ours (full)} & \textbf{4o-mini} & \textbf{94.6\%} & $\boldsymbol{+947}$ \\
 \bottomrule
 \end{tabular}
-\caption{Comparison with baselines and competing systems. The static dummy
-returns a fixed response every round. The bare LLM range reflects three
-runs of GPT-4o-mini with basic prompting and no decomposition pipeline.
-The prompt-engineered row reflects 16 runs with iterative prompt tuning,
-spatial hints, and few-shot examples but no 2.5-D decomposition ($n = 16$,
-mean 63.3\%, $\sigma = 8.0\%$).
-hisandan/build-it-3 is the top competing system on the BWIM leaderboard,
-using GPT-4o with direct LLM spatial reasoning and no deterministic
-pipeline; its result is from a single public leaderboard submission
-($n = 1$), and the score was computed from the public run log.
-Our system uses GPT-4o-mini, a smaller and cheaper model, with
-the full 2.5-D decomposition pipeline.}
+\caption{Comparison with baselines and competing systems.}
 \label{tab:baselines}
 \end{table}
 
-The static dummy agent returns a fixed 15-block string regardless of
-instruction, achieving 26.9\%. The bare LLM configuration (GPT-4o-mini with
-no decomposition) achieves 40--52.5\% depending on prompt engineering effort.
-With iterative prompt tuning, spatial hints, and few-shot examples but still
-no decomposition pipeline, accuracy reaches a mean of 63.3\% across 16 runs
-($\sigma = 8.0\%$, range 47.5--75.9\%). This represents the practical
-ceiling of prompt engineering alone on this task with GPT-4o-mini.
-The top competing system, hisandan/build-it-3~\cite{hisandan}, uses GPT-4o
-(a larger and more expensive model) with direct LLM spatial reasoning and no
-deterministic pipeline, reaching 76.3\%. Our system achieves 94.6\% with
-GPT-4o-mini, outperforming the larger-model competing system by 18.3
-percentage points, which supports the claim that pipeline architecture
-matters more than model capacity.
+The baseline agent returns a fixed build response regardless of the
+instruction, establishing a floor.
+The ``Ours without 2.5-D decomp.'' row is from the controlled ablation
+(Table~\ref{tab:ablation}, $n = 7$): it retains the engineered fallback
+prompt with spatial rules and underspecification questions but disables
+the decomposition pipeline, forcing the LLM to produce full 3D
+coordinates directly.
+hisandan/build-it-3~\cite{hisandan} uses GPT-4o with example-anchored
+prompting, speaker modeling, and strategic questioning for end-to-end
+coordinate generation without a decomposition pipeline, improving from
+49\% to 76.3\% across successive iterations ($n = 1$, score from the
+public run log).
+Our full system outperforms the competing system, which uses GPT-4o
+(a larger and more expensive model), by 18.3 percentage points.
 
 \subsection{Development Progression}
 
@@ -622,10 +632,12 @@ confirming that 2.5-D decomposition is the foundational architectural
 contribution. Underspecification questions contribute
 the second largest effect ($-17.9$ pp), consistent with our expected value
 analysis showing that asking is +EV when guess accuracy falls below 75\%.
-Peephole prompt optimization accounts for $-11.3$ pp, and the skip-forward
+Adaptive prompt enrichment accounts for $-11.3$ pp, and the skip-forward
 rule for $-3.9$ pp. The plan verifier shows no statistically significant
 effect ($-0.6$ pp, $p = 0.36$), suggesting that the planner rarely
 produces the error patterns the verifier targets.
+Even with enrichment entirely disabled, the system reaches 83.3\%,
+still 7 pp above the best competing system's 76.3\% with GPT-4o.
 
 \subsection{Model Comparison}
 
@@ -736,6 +748,20 @@ result demonstrates that the 2.5-D decomposition pipeline is not tightly
 coupled to a specific LLM provider and can transfer to locally hosted
 open-weight models on embedded AI hardware with minimal accuracy loss.
 
+\subsection{Transfer to IGLU}
+
+To test generality, we applied the 2.5-D decomposition to the IGLU
+collaborative building dataset \cite{iglu2022}, an independent benchmark
+with different instructions, a larger grid ($11 \times 9 \times 11$),
+and no shared evaluation items with BWIM. We evaluated 500 gravity-compatible
+tasks with GPT-4o-mini at temperature 0, comparing a bare coordinate-output
+prompt against the 2.5-D decomposed prompt. The decomposition improved mean
+block-level F1 from 0.723 to 0.798 (paired $t(499) = 5.76$, $p < 10^{-8}$,
+$d = 0.26$, 95\% CI $[0.050, 0.101]$). No enrichment rules, plan verifier,
+or underspecification handling were used. The result confirms that
+dimensional reduction alone, the core architectural principle, transfers
+to a structurally different spatial construction task.
+
 \subsection{Error Analysis}
 
 Across all 12 frozen-commit GPT-4o-mini runs (1,920 total rounds), 104
@@ -765,13 +791,14 @@ independently detect or correct.
 This study has several limitations that constrain the generality of our
 findings.
 
-\textbf{Single benchmark.} All results are reported on a single benchmark
-(BWIM, 160 rounds). The 2.5-D decomposition approach depends on a
+\textbf{Single benchmark.} The primary evaluation uses a single
+160-round benchmark (BWIM), though the IGLU transfer experiment
+confirms the effect generalizes to an independent dataset.
+The 2.5-D decomposition approach depends on a
 gravity constraint that makes vertical coordinates deterministically
 computable. Tasks without such a constraint (e.g., free-form 3D
 placement, assembly with rotations) would require a different
-decomposition. Evaluating generalization to other spatial reasoning
-benchmarks is an important direction for future work.
+decomposition.
 
 \textbf{Ablation variance.} Each ablation condition uses $n = 7$
 runs, which provides strong power for large effects (the four significant
@@ -779,7 +806,7 @@ components all have $p < 0.0001$) but may miss smaller contributions.
 The plan verifier result ($-0.6$ pp, $p = 0.36$) may reflect insufficient
 power rather than a true null effect.
 
-\textbf{Rule-based corrections and overfitting risk.} The 15 peephole
+\textbf{Rule-based corrections and overfitting risk.} The 15 adaptive
 enrichment rules and four plan verifier corrections were developed by
 analyzing failure modes on the BWIM instruction set. While the targeted
 failure patterns (directional confusion, stack miscounting, L-shape and
@@ -812,7 +839,7 @@ model capacity is the primary performance driver. A controlled ablation
 study ($n = 7$ per condition) shows that 2.5-D decomposition accounts
 for the largest single accuracy contribution ($-50.7$ pp when removed,
 $p < 0.0001$), followed by underspecification questions ($-17.9$ pp),
-peephole prompt optimization ($-11.3$ pp), and the skip-forward rule
+adaptive prompt enrichment ($-11.3$ pp), and the skip-forward rule
 ($-3.9$ pp), all significant at $p < 0.0001$.
 
 The broader principle is that LLM spatial reasoning can be made reliable by
@@ -821,7 +848,7 @@ computable from task constraints and removing those dimensions from the
 LLM's responsibility. This principle extends to any domain where one or
 more output dimensions are deterministic functions of the others, a
 condition we term 2.5-D structure by analogy with Marr's 2.5-D
-sketch~\cite{marr1982}.
+sketch~\cite{marr2010}.
 
 The pipeline also transfers to edge hardware: Nemotron-3
 120B across six runs on a local NVIDIA Jetson Thor AGX achieved 94.5\%
@@ -829,11 +856,9 @@ mean accuracy (+943 mean score), statistically indistinguishable from
 the GPT-4o-mini cloud mean, with no prompt modifications and a median
 per-request latency of 50.2 seconds.
 
-Future work includes evaluating the approach on additional spatial
-reasoning benchmarks, developing methods the builder can use to detect
-architect errors, and investigating whether the 2.5-D decomposition
-principle applies to tasks with more complex physical constraints such as
-structural stability or connectivity requirements.
+Future work includes developing methods for the builder to detect
+architect errors and investigating whether the 2.5-D principle extends
+to tasks with structural stability or connectivity constraints.
 
 \section*{Reproducibility}
 \begingroup\sloppy
@@ -841,6 +866,8 @@ structural stability or connectivity requirements.
 The full source code, including all prompts, enrichment rules, and
 evaluation scripts, is available at
 \url{https://github.com/paulwhitten/AgentWhetters-bwim}.
+The IGLU transfer experiment code is in
+\texttt{iglu/} on the \texttt{main} branch of the same repository.
 All publication results were produced from tag \texttt{v1.0.5} using
 models \texttt{gpt-4o-mini-}{\allowbreak}\texttt{2024-07-18}
 and \texttt{gpt-4o-}{\allowbreak}\texttt{2024-08-06} via the
@@ -853,136 +880,7 @@ uses the BWIM framework from UvA LTL~\cite{bwim}. Ablation branches, run
 transcripts, and scoring logs are included in the repository.
 \endgroup
 
-\begin{thebibliography}{99}
-
-\bibitem{bwim}
-
-UvA LTL.
-\emph{Build What I Mean}, 2026.
-\url{https://github.com/ltl-uva/build_what_i_mean}
-
-\bibitem{yamada2024}
-Y.~Yamada, Y.~Bao, A.~K.~Lampinen, J.~Kasai, and I.~Yildirim.
-Evaluating spatial understanding of large language models.
-\emph{Transactions on Machine Learning Research}, 2024.
-
-\bibitem{bang2023}
-Y.~Bang et al.
-A multitask, multilingual, multimodal evaluation of {ChatGPT} on
-reasoning, hallucination, and interactivity.
-In \emph{AACL}, 2023.
-
-\bibitem{wei2022}
-J.~Wei et al.
-Chain-of-thought prompting elicits reasoning in large language models.
-In \emph{NeurIPS}, 2022.
-
-\bibitem{madaan2023}
-A.~Madaan et al.
-Self-refine: Iterative refinement with self-feedback.
-In \emph{NeurIPS}, 2023.
-
-\bibitem{schick2023}
-T.~Schick et al.
-Toolformer: Language models can teach themselves to use tools.
-\emph{arXiv:2302.04761}, 2023.
-
-\bibitem{khot2023}
-T.~Khot et al.
-Decomposed prompting: A modular approach for solving complex tasks.
-In \emph{ICLR}, 2023.
-
-\bibitem{wang2023}
-L.~Wang et al.
-Plan-and-solve prompting: Improving zero-shot chain-of-thought
-reasoning by large language models.
-In \emph{ACL}, 2023.
-
-\bibitem{yi2018}
-K.~Yi et al.
-Neural-symbolic {VQA}: Disentangling reasoning from vision and
-language understanding.
-In \emph{NeurIPS}, 2018.
-
-\bibitem{marr1982}
-D.~Marr.
-\emph{Vision: A Computational Investigation into the Human Representation
-and Processing of Visual Information}.
-W.H. Freeman, 1982.
-
-\bibitem{nayak2015}
-A.~Nayak, J.~Steuben, D.~Poff, M.~Kirby, and H.~Ilies.
-Automatic 2.5{D} part decomposition for multi-axis machining.
-\emph{Computer-Aided Design}, 2015.
-
-\bibitem{mckeeman1965}
-W.~M.~McKeeman.
-Peephole optimization.
-\emph{Communications of the ACM}, 8(7):443--444, 1965.
-
-\bibitem{hisandan}
-hisandan.
-\emph{build-it-3: BWIM competition agent}, 2026.
-\url{https://github.com/hisandan/build-it-3}
-
-\bibitem{voyager2023}
-G.~Wang et al.
-{VOYAGER}: An open-ended embodied agent with large language models.
-\emph{arXiv:2305.16291}, 2023.
-
-\bibitem{gitm2023}
-Z.~Zhu et al.
-Ghost in the {Minecraft}: Generally capable agents for open-world
-environments via large language models with text-based knowledge and memory.
-\emph{arXiv:2305.17144}, 2023.
-
-\bibitem{plan4mc2023}
-H.~Yuan et al.
-Plan4{MC}: Skill reinforcement learning and planning for open-world
-{Minecraft} tasks.
-\emph{arXiv:2303.16563}, 2023.
-
-\bibitem{saycan2022}
-M.~Ahn et al.
-Do as I can, not as I say: Grounding language in robotic affordances.
-\emph{arXiv:2204.01691}, 2022.
-
-\bibitem{cap2022}
-J.~Liang et al.
-Code as policies: Language model programs for embodied control.
-\emph{arXiv:2209.07753}, 2022.
-
-\bibitem{innermonologue2022}
-W.~Huang et al.
-Inner monologue: Embodied reasoning through planning with language models.
-\emph{arXiv:2207.05608}, 2022.
-
-\bibitem{nemotron2024}
-NVIDIA.
-\emph{Nemotron-3-Super-120B-A12B}, 2024.
-\url{https://huggingface.co/nvidia/Nemotron-3-Super-120B-A12B-NVFP4}
-
-\bibitem{jetsonthor}
-NVIDIA.
-\emph{Jetson Thor}, 2025.
-\url{https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/}
-
-\bibitem{vllm2023}
-W.~Kwon et al.
-Efficient memory management for large language model serving with
-{PagedAttention}.
-In \emph{Proc.\ SOSP}, 2023.
-
-\bibitem{dice1945}
-L.~R.~Dice.
-Measures of the amount of ecologic association between species.
-\emph{Ecology}, 26(3):297--302, 1945.
-
-\bibitem{vanrijsbergen1979}
-C.~J.~Van~Rijsbergen.
-\emph{Information Retrieval}.
-Butterworth-Heinemann, 2nd edition, 1979.
-
-\end{thebibliography}
+\bibliographystyle{unsrt}
+\bibliography{references}
 
 \end{document}
