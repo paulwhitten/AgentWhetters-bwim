@@ -1,12 +1,43 @@
 # AgentWhetters BWIM
 
-Copied and adapted from the [build_what_i_men agent](https://github.com/ltl-uva/build_what_i_mean).
+> **1st place (tied) — Gaming Agents track, AgentBeats competition**
+> Leaderboard: [agentbeats.dev/agentbeater/build-what-i-mean](https://agentbeats.dev/agentbeater/build-what-i-mean)
 
-Based on the minimal template for building [A2A (Agent-to-Agent)](https://a2a-protocol.org/latest/) green agents compatible with the [AgentBeats](https://agentbeats.dev) platform.
+An LLM agent for the **Build What I Mean (BWIM)** benchmark: natural-language-guided 3D construction under ambiguous, underspecified instructions. The agent reads a builder's intent, decides whether it has enough information to act, and either asks a clarifying question or executes the build.
 
-This project contains a purple agent designed use gpt-4o-mini for the bwim problem.
+Built on the [A2A (Agent-to-Agent) protocol](https://a2a-protocol.org/latest/) for the [AgentBeats](https://agentbeats.dev) platform. Uses `gpt-4o-mini` with a modular skills pipeline that offloads spatial computation to deterministic code. Adapted from the [upstream BWIM baseline](https://github.com/ltl-uva/build_what_i_mean).
 
-It incorporates spatial reasoning skills, instruction decomposition, underspecification detection, adaptive prompt enrichment, and build execution that simplifies the build space for the build what I mean task. More details on the purple agent are in the [purple agent README](./pragmatic_builder/purple_openai/README.md) or the [article draft](https://paul.whitten.dev/agentwhetter_bwim_article.pdf).
+![Figure 1 — A benchmark round requiring T-shape recognition and extension.](https://arxiv.org/html/2605.07066v1/x1.png)
+
+*Figure 1 — A benchmark round requiring T-shape recognition and extension.*
+
+The above figure depicts an initial build state provided to the agent on the left in the form of block coordinates and colors. The agent is then presented with the instruction: 'Keeping the T shape, extend the existing green structure by adding two green blocks to the longer base. Then add one purple block to each arm.' The diagram on the right is a visualization of the resulting output. New blocks are marked with +.
+
+## Approach
+
+The agent combines six techniques to handle BWIM's ambiguity-under-time-pressure setting:
+
+- **Spatial reasoning** — a deterministic spatial executor computes all vertical placement from horizontal coordinates and column occupancy, eliminating y-coordinate errors entirely.
+- **Instruction decomposition** — the LLM decomposes each instruction into a plan of typed JSON actions, each specifying action type, horizontal position, color, and count.
+- **Underspecification detection** — expected-value analysis flags missing color or count and decides when to ask a clarifying question, with a decision threshold at p\* = 0.75.
+- **Adaptive prompt enrichment** — detects difficult spatial concepts (e.g., T-shape, L-shape) and injects targeted enrichments such as few-shot examples to guide the LLM.
+- **Peephole optimization** — scans planned actions against pattern-matching rules to catch and correct common LLM errors specific to spatial build tasks before execution.
+- **Build space simplification** — a 2.5-D decomposition reduces the output space from |𝒢|×|𝒞| to |{0,…,8}|² × |𝒞|, letting the planner reason in 2D while the executor handles vertical placement.
+
+![Figure 2 — 2.5-D decomposition: the LLM planner generates 2D plans with (x,z) coordinates and action types. The deterministic executor computes vertical placement via column occupancy.](https://arxiv.org/html/2605.07066v1/x2.png)
+
+*Figure 2 — 2.5-D decomposition architecture.*
+
+Detailed pipeline: [purple agent README](./pragmatic_builder/purple_openai/README.md). Article draft: [agentwhetter_bwim_article.pdf](https://paul.whitten.dev/agentwhetter_bwim_article.pdf).
+
+## Results
+
+- **Leaderboard**: [agentbeats.dev/agentbeater/build-what-i-mean](https://agentbeats.dev/agentbeater/build-what-i-mean) — 1st place (tied)
+- **Paper** (submitted to NAECON 2026): [arxiv.org/abs/2605.07066](https://arxiv.org/abs/2605.07066)
+- **Structural accuracy**: 94.6% with GPT-4o-mini on BWIM (vs. 76.3% best competing system)
+- **Ablation**: removing 2.5-D decomposition drops accuracy by 50.7 points to 43.8%
+- **IGLU transfer**: block-level F1 improves from 0.723 to 0.798 across 500 tasks
+- **Provisional patent** filed April 2026
 
 ## Project Structure
 
@@ -16,17 +47,14 @@ pragmatic_builder/
 ├─ green_agent.py     # Agent logic
 ├─ evaluator_proxy.py # Proxy server for evaluation flows
 ├─ agentbeats/        # AgentBeats integration helpers
-└─ skills/            # skills used to solve the bwim instructions
+└─ skills/            # Skills used to solve BWIM instructions
 data/                 # Scenario data files
 Dockerfile            # Docker configuration
 pyproject.toml        # Python dependencies
-.github/
-└─ workflows/
-   └─ test-and-publish.yml # CI workflow
+.github/workflows/test-and-publish.yml # CI workflow
 ```
-## How to Play
 
-### Running Locally
+## Running Locally
 
 ```bash
 # Install dependencies
@@ -39,38 +67,47 @@ uv run pragmatic_builder/builder_agent.py --host 127.0.0.1 --port 9019
 uv run pragmatic_builder/evaluator_proxy.py --host 127.0.0.1 --port 9009
 ```
 
-### Running the default Scenario
+### Default scenario
+
 ```bash
 cd pragmatic_builder
-AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 uv run python -m agentbeats.run_scenario scenario.toml --show-logs
+AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 \
+    uv run python -m agentbeats.run_scenario scenario.toml --show-logs
 ```
 
-### Running a Scenario with a questionnaire
+### Scenario with a questionnaire
+
 ```bash
 cd pragmatic_builder
-AGENT_QA_MODE=dummy AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 uv run python -m agentbeats.run_scenario scenario_question_dummy.toml --show-logs
+AGENT_QA_MODE=dummy AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 \
+    uv run python -m agentbeats.run_scenario scenario_question_dummy.toml --show-logs
 ```
 
-### Running a Scenario with OpenAI QA
+### Scenario with OpenAI QA
+
 ```bash
 cd pragmatic_builder
 export OPENAI_API_KEY="your_openai_api_key_here"
-AGENT_QA_MODE=openai AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 uv run python -m agentbeats.run_scenario scenario_question_dummy.toml --show-logs
+AGENT_QA_MODE=openai AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 \
+    uv run python -m agentbeats.run_scenario scenario_question_dummy.toml --show-logs
 ```
 
-### Running a Scenario with an OpenAI Purple Agent
+### Scenario with an OpenAI purple agent
+
 ```bash
 cd pragmatic_builder
 export OPENAI_API_KEY="your_openai_api_key_here"
 export OPENAI_MODEL="gpt-4o-mini"
-AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 uv run python -m agentbeats.run_scenario scenario_openai_purple.toml --show-logs
+AGENT_TRANSCRIPT_DIR=logs/transcripts AGENT_DEBUG=1 \
+    uv run python -m agentbeats.run_scenario scenario_openai_purple.toml --show-logs
 ```
 
-### Run Scenario Agents + CLI Client (writes results.json)
+### Scenario agents + CLI client (writes results.json)
+
 ```bash
 cd pragmatic_builder
 AGENT_TRANSCRIPT_DIR=logs/transcripts \
-  uv run python -m agentbeats.run_scenario scenario.toml --serve-only &
+    uv run python -m agentbeats.run_scenario scenario.toml --serve-only &
 ```
 
 ```bash
@@ -78,7 +115,7 @@ cd pragmatic_builder
 uv run python -m agentbeats.client_cli scenario.toml results.json
 ```
 
-## Running with Docker (not tested yet)
+## Running with Docker
 
 ```bash
 # Build the green agent image
@@ -110,21 +147,11 @@ uv run pytest --agent-url http://localhost:9009
 
 ## Publishing
 
-The repository includes a GitHub Actions workflow that automatically builds, tests, and publishes a Docker image of your agent to GitHub Container Registry.
+The repository includes a GitHub Actions workflow that automatically builds, tests, and publishes a Docker image to GitHub Container Registry.
 
-If your agent needs API keys or other secrets, add them in Settings → Secrets and variables → Actions → Repository secrets. They'll be available as environment variables during CI tests.
+- **Push to `main`** → publishes `latest`: `ghcr.io/<user>/<repo>:latest`
+- **Git tag** (e.g. `v1.0.0`) → publishes version tags: `ghcr.io/<user>/<repo>:1.0.0`, `:1`
 
-- **Push to `main`** → publishes `latest` tag:
-```
-ghcr.io/<your-username>/<your-repo-name>:latest
-```
+If your agent needs API keys or other secrets, add them in Settings → Secrets and variables → Actions → Repository secrets.
 
-- **Create a git tag** (e.g. `git tag v1.0.0 && git push origin v1.0.0`) → publishes version tags:
-```
-ghcr.io/<your-username>/<your-repo-name>:1.0.0
-ghcr.io/<your-username>/<your-repo-name>:1
-```
-
-Once the workflow completes, find your Docker image in the Packages section (right sidebar of your repository). Configure the package visibility in package settings.
-
-> **Note:** Organization repositories may need package write permissions enabled manually (Settings → Actions → General). Version tags must follow [semantic versioning](https://semver.org/) (e.g., `v1.0.0`).
+> Organization repositories may need package write permissions enabled manually (Settings → Actions → General). Version tags must follow [semantic versioning](https://semver.org/).
