@@ -42,9 +42,9 @@ accuracy across 12 independent runs, within 3.0 percentage points of the
 improvement can address. This outperforms both GPT-4o at 90.3\%
 and the best competing system at 76.3\%. A controlled
 ablation confirms that 2.5-D decomposition is the dominant contributor,
-accounting for 50.7 percentage points of accuracy. The pipeline transfers
+accounting for 28.7 percentage points of accuracy. The pipeline transfers
 to edge hardware: an open-weight Nemotron-3 120B model on an NVIDIA
-Jetson Thor AGX achieves 94.5\% mean accuracy with no prompt
+Jetson Thor AGX achieves 96.0\% mean accuracy with no prompt
 modifications. A transfer experiment on 500 IGLU collaborative building
 tasks confirms the effect generalizes beyond the primary benchmark.
 Source code is publicly available.
@@ -534,7 +534,7 @@ the top competing system on the BWIM leaderboard.
 \textbf{System} & \textbf{Model} & \textbf{Acc.} & \textbf{Score} \\
 \midrule
 BWIM baseline~\cite{baseline} & None & 26.9\% & $-345$ \\
-Ours without 2.5-D decomp. & 4o-mini & 43.8\% & $-51$ \\
+Ours without 2.5-D decomp. & 4o-mini & 65.9\% & $+29$ \\
 hisandan/build-it-3~\cite{hisandan} & 4o & 76.3\% & $+765$ \\
 \textbf{Ours (full)} & \textbf{4o-mini} & \textbf{94.6\%} & $\boldsymbol{+947}$ \\
 \bottomrule
@@ -548,8 +548,8 @@ instruction, establishing a floor.
 The ``Ours without 2.5-D decomp.'' row is from the controlled ablation
 (Table~\ref{tab:ablation}, $n = 7$): it retains the engineered fallback
 prompt with spatial rules and underspecification questions but disables
-the decomposition pipeline, forcing the LLM to produce full 3D
-coordinates directly.
+the deterministic vertical-placement step, requiring the LLM to produce
+full 3D coordinates directly with the few-shot examples expressed in 3D.
 hisandan/build-it-3~\cite{hisandan} uses GPT-4o with example-anchored
 prompting, speaker modeling, and strategic questioning for end-to-end
 coordinate generation without a decomposition pipeline, improving from
@@ -610,7 +610,7 @@ Welch two-sample $t$-tests.
 \textbf{Configuration} & $n$ & \textbf{Mean Acc.} & $\sigma$ & \textbf{95\% CI} & $\Delta$ & $p$ \\
 \midrule
 Full system          & 12 & 94.6\% & 0.72\% & [94.1, 95.0] & --          & -- \\
-$-$ 2.5-D decomp.   &  7 & 43.8\% & 1.42\% & [42.5, 45.2] & $-$50.7 pp & $<$0.0001 \\
+$-$ 2.5-D decomp.   &  7 & 65.9\% & 1.24\% & [64.7, 67.0] & $-$28.7 pp & $<$0.0001 \\
 $-$ Underspec.\ qs  &  7 & 76.7\% & 0.70\% & [76.1, 77.3] & $-$17.9 pp & $<$0.0001 \\
 $-$ Enrichment       &  7 & 83.3\% & 1.29\% & [82.1, 84.5] & $-$11.3 pp & $<$0.0001 \\
 $-$ Skip-forward     &  7 & 90.7\% & 1.22\% & [89.6, 91.8] & $-$3.9 pp  & $<$0.0001 \\
@@ -626,8 +626,8 @@ verifier are statistically significant (Welch $t$-test, $p < 0.0001$).}
 
 Removing 2.5-D decomposition, which reverts the system to direct 3D
 coordinate generation by the LLM, produces the largest accuracy drop
-($-50.7$ percentage points, $p < 0.0001$), reducing accuracy to 43.8\%.
-This is comparable to the bare LLM baseline (40\% in early development),
+($-28.7$ percentage points, $p < 0.0001$), reducing accuracy to 65.9\%.
+This is the largest single-component effect,
 confirming that 2.5-D decomposition is the foundational architectural
 contribution. Underspecification questions contribute
 the second largest effect ($-17.9$ pp), consistent with our expected value
@@ -653,7 +653,7 @@ GPT-4o-mini and GPT-4o, both using the identical pipeline.
 \midrule
 GPT-4o-mini & 12 & 94.6\% & 0.72\% & [94.2\%, 95.0\%] & +946.7 & .987 \\
 GPT-4o      &  6 & 90.3\% & 0.52\% & [89.8\%, 90.9\%] & +810.0 & .975 \\
-Nemotron-3$^\dagger$ & 6 & 94.5\% & 0.83\% & [93.6\%, 95.4\%] & +943.3 & .981 \\
+Nemotron-3$^\dagger$ & 6 & 96.0\% & 0.31\% & [95.7\%, 96.4\%] & +993.3 & .987 \\
 \bottomrule
 \multicolumn{7}{@{}l}{\footnotesize $^\dagger$Nemotron-3-Super-120B-A12B-NVFP4, local Jetson Thor AGX.}
 \end{tabular}
@@ -661,8 +661,8 @@ Nemotron-3$^\dagger$ & 6 & 94.5\% & 0.83\% & [93.6\%, 95.4\%] & +943.3 & .981 \\
 code, scenario configuration, and prompts. The only difference is the
 underlying language model. The Welch two-sample $t$-test between GPT-4o-mini
 and GPT-4o yields $t = 14.3$, $\mathit{df} = 13.5$, $p < 0.0001$,
-Cohen's $d = 6.8$. The Nemotron-3 mean (94.5\%) is statistically
-indistinguishable from GPT-4o-mini (Welch $t = 0.26$, $p = 0.80$).}
+Cohen's $d = 6.8$. The Nemotron-3 mean (96.0\%) slightly exceeds
+GPT-4o-mini (Welch $t = 5.9$, $p < 0.001$).}
 \label{tab:comparison}
 \end{table}
 
@@ -708,15 +708,62 @@ GPT-4o impractical as the development model for the iterative prompt
 engineering workflow that produced the enrichment rules and verifier
 corrections.
 
+\subsection{Open-Model Generalization}
+
+To assess whether the pipeline transfers beyond the OpenAI models, we ran
+the identical frozen pipeline with three additional open models served
+through Azure AI Foundry, with GPT-4o-mini retained as the green agent in
+all cases and no model-specific prompt tuning. Table~\ref{tab:openmodels}
+reports accuracy and composite score across six independent runs per
+model. We omit latency for these runs because the Azure AI Foundry
+endpoints used rate-limited evaluation tiers (20 requests per minute,
+20{,}000 tokens per minute), so wall-clock timing reflects quota
+throttling rather than the pipeline or model.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Model} & $n$ & \textbf{Mean Acc.} & $\sigma$ & \textbf{Mean Score} \\
+\midrule
+DeepSeek V3.2        & 6 & 95.9\% & 0.34\% & +990 \\
+Llama 4 Maverick 17B & 6 & 91.3\% & 0.00\% & +840 \\
+Kimi K2.5            & 6 & 84.5\% & 1.99\% & +623 \\
+\bottomrule
+\end{tabular}
+\caption{Open models on the frozen pipeline, served via Azure AI Foundry
+($n = 6$ each, GPT-4o-mini green agent). Latency is omitted because these
+endpoints used rate-limited tiers. For reference, GPT-4o-mini reaches
+94.6\% and GPT-4o reaches 90.3\% on the same pipeline
+(Table~\ref{tab:comparison}).}
+\label{tab:openmodels}
+\end{table}
+
+DeepSeek V3.2 reaches 95.9\% mean accuracy, marginally above the
+GPT-4o-mini mean of 94.6\%, and Llama 4 Maverick 17B reaches 91.3\%, above
+the GPT-4o mean of 90.3\%. Kimi K2.5 is lower at 84.5\% with the largest
+run-to-run variance ($\sigma = 1.99\%$). Llama 4 Maverick produced
+identical results across all six runs at temperature 0.1, making the same
+fourteen errors each time, which indicates deterministic behavior on this
+task rather than a fortunate sample. These results are consistent with the
+GPT-4o-mini and GPT-4o comparison: models of varied scale and origin reach
+high accuracy on the frozen pipeline, which supports the view that the
+deterministic decomposition contributes more to reliability than the
+choice of underlying model. We do not claim the pipeline makes all models
+equivalent, as the Kimi K2.5 result shows model choice still matters.
+
 \subsection{Edge Inference Latency}
 
 Across six Nemotron-3-Super-120B-A12B runs on a local NVIDIA Jetson Thor
-AGX, mean accuracy was 94.5\% ($\sigma = 0.83\%$, +943 mean score),
-statistically indistinguishable from the GPT-4o-mini cloud mean
-(Welch $t = 0.26$, $p = 0.80$). The model ran at NVFP4 precision with no
-prompt modifications. Table~\ref{tab:latency} summarizes per-request
-latency from a representative run across 158 planner calls (the remaining
-two rounds used cached fallbacks).
+AGX, mean accuracy was 96.0\% ($\sigma = 0.31\%$, +993 mean score),
+slightly exceeding the GPT-4o-mini cloud mean
+(Welch $t = 5.9$, $p < 0.001$). The model ran at NVFP4 precision. We
+separately measured inference latency under a deployment-oriented
+configuration that enables the model's low-effort reasoning mode and vLLM
+prefix caching of the shared system prompt. Table~\ref{tab:latency}
+summarizes per-request planner latency across six such runs (960 planner
+calls).
 
 \begin{table}[ht]
 \centering
@@ -725,22 +772,22 @@ two rounds used cached fallbacks).
 \toprule
 \textbf{Min} & \textbf{P25} & \textbf{Median} & \textbf{Mean} & \textbf{P95} & \textbf{Max} \\
 \midrule
-23.6 & 38.8 & 50.2 & 61.6 & 130.6 & 160.3 \\
+8.3 & 13.2 & 17.1 & 19.7 & 37.0 & 68.1 \\
 \bottomrule
 \end{tabular}
-\caption{Per-request inference latency on Jetson Thor AGX (seconds).}
+\caption{Per-request planner latency on Jetson Thor AGX (seconds), low-effort
+reasoning with prefix caching enabled.}
 \label{tab:latency}
 \end{table}
 
-The median request completed in 50.2 seconds and 64\% of requests
-finished within 60 seconds. The distribution has a long tail: 8\% of
-requests exceeded 120 seconds, corresponding to instructions with
-complex spatial references (T-shapes, L-shapes) that produce longer
-reasoning traces under the model's chain-of-thought. Total LLM inference
-time for the 160-round run was 162 minutes, compared to approximately
-8.9 minutes for GPT-4o-mini via the cloud API, an 18$\times$ slowdown.
-The pipeline's 600-second timeout with exponential backoff accommodated
-all requests without failures.
+The median request completed in 17.1 seconds and 99.8\% of requests
+finished within 60 seconds. The distribution has a short tail: the
+slowest request was 68.1 seconds and no request exceeded 120 seconds,
+reflecting the bounded length of low-effort reasoning traces. Total
+planner inference time averaged 52.6 minutes per 160-round run, compared
+to approximately 8.9 minutes for GPT-4o-mini via the cloud API, a
+5.9$\times$ slowdown. The pipeline's 600-second timeout with exponential
+backoff accommodated all requests without failures.
 
 Compared to sub-second cloud API responses, the latency increase is
 substantial but acceptable for non-real-time construction tasks. The
@@ -837,7 +884,7 @@ $\sigma = 0.72\%$), outperforming GPT-4o at 90.3\% ($n = 6$,
 $p < 0.0001$) and confirming that the deterministic pipeline rather than
 model capacity is the primary performance driver. A controlled ablation
 study ($n = 7$ per condition) shows that 2.5-D decomposition accounts
-for the largest single accuracy contribution ($-50.7$ pp when removed,
+for the largest single accuracy contribution ($-28.7$ pp when removed,
 $p < 0.0001$), followed by underspecification questions ($-17.9$ pp),
 adaptive prompt enrichment ($-11.3$ pp), and the skip-forward rule
 ($-3.9$ pp), all significant at $p < 0.0001$.
@@ -851,8 +898,8 @@ condition we term 2.5-D structure by analogy with Marr's 2.5-D
 sketch~\cite{marr2010}.
 
 The pipeline also transfers to edge hardware: Nemotron-3
-120B across six runs on a local NVIDIA Jetson Thor AGX achieved 94.5\%
-mean accuracy (+943 mean score), statistically indistinguishable from
+120B across six runs on a local NVIDIA Jetson Thor AGX achieved 96.0\%
+mean accuracy (+993 mean score), slightly exceeding
 the GPT-4o-mini cloud mean, with no prompt modifications and a median
 per-request latency of 50.2 seconds.
 
