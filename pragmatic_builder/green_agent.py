@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from a2a.server.tasks import TaskUpdater
@@ -35,6 +36,10 @@ class BuildingInstructorGreenAgent:
     async def _debug_pause(self, prompt: str) -> None:
         if not self._debug or not sys.stdin.isatty():
             return
+        # Only block on input() if AGENT_DEBUG_PAUSE=1 is set.
+        # This prevents the green agent from hanging when run
+        # non-interactively via the scenario runner with AGENT_DEBUG=1.
+        if not os.getenv("AGENT_DEBUG_PAUSE", "").strip().lower() in {"1", "true", "yes", "on"}:
             return
         await asyncio.to_thread(input, prompt)
 

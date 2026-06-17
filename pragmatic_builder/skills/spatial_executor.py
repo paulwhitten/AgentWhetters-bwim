@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Optional
 
@@ -22,12 +23,19 @@ class SpatialExecutor:
 
     def __init__(self, grid: Grid):
         self.grid = grid
+        self._strict_3d = os.getenv("BWIM_STRICT_3D", "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
         # Track the (x, z) of the last step executed, so chain references
         # like "the X one" or "directly to the right of the red one" resolve
         # to the most-recently placed position.
         self._last_step_position: tuple[int, int] | None = None
         # Track last-placed position per color for "the <color> one" refs
         self._last_position_by_color: dict[str, tuple[int, int]] = {}
+        # Instrumentation counters for 2.5-D ablation validation.
+        self._placements_total = 0
+        self._placements_llm_y = 0
+        self._placements_next_y = 0
 
     def execute_plan(self, steps: list[BuildStep]) -> Grid:
         """Execute all steps in order. Returns the final grid state."""
@@ -42,7 +50,31 @@ class SpatialExecutor:
             except ExecutionError as exc:
                 logger.warning("Step %d failed: %s", i + 1, exc)
                 raise
+        logger.info(
+            "Y-source summary: total=%d llm_y=%d next_y_fallback=%d",
+            self._placements_total,
+            self._placements_llm_y,
+            self._placements_next_y,
+        )
+        if self._placements_next_y > 0:
+            logger.warning(
+                "next_y fallback was used %d time(s); this is not strict 3D-only execution",
+                self._placements_next_y,
+            )
         return self.grid
+
+    def _track_y_source(self, used_llm_y: bool) -> None:
+        self._placements_total += 1
+        if used_llm_y:
+            self._placements_llm_y += 1
+        else:
+            self._placements_next_y += 1
+
+    def _require_llm_y(self, step: BuildStep, action_name: str) -> None:
+        if self._strict_3d and "y" not in step.position:
+            raise ExecutionError(
+                f"Strict 3D mode: missing y in step for action '{action_name}'"
+            )
 
     def _record_step_position(self, x: int, z: int, color: str) -> None:
         """Record the position of the most recently placed block/stack."""
@@ -280,13 +312,23 @@ class SpatialExecutor:
         color = self._resolve_color(step.color)
         x, z = self._resolve_position(step.position)
         count = self._resolve_count(step.count, hint_x=x, hint_z=z)
+        self._require_llm_y(step, "stack")
 
-        for _ in range(count):
-            ny = self.grid.next_y(x, z)
+        # Use LLM-provided y as starting y if present, otherwise compute
+        start_y = int(step.position["y"]) if "y" in step.position else None
+
+        for i in range(count):
+            if start_y is not None:
+                ny = start_y + i * 100
+                used_llm_y = True
+            else:
+                ny = self.grid.next_y(x, z)
+                used_llm_y = False
             if ny > self.grid.config.valid_y[-1]:
-                logger.warning("Stack at (%d,%d) reached max height, placed %d blocks", x, z, _)
+                logger.warning("Stack at (%d,%d) reached max height, placed %d blocks", x, z, i)
                 break
             self.grid.add(Block(color=color, x=x, y=ny, z=z))
+            self._track_y_source(used_llm_y)
             logger.info("  -> placed %s at (%d,%d,%d) [stack]", color, x, ny, z)
         self._record_step_position(x, z, color)
 
@@ -294,10 +336,18 @@ class SpatialExecutor:
         """Place a single block at an absolute position."""
         color = self._resolve_color(step.color)
         x, z = self._resolve_position(step.position)
-        ny = self.grid.next_y(x, z)
+        self._require_llm_y(step, "place")
+        # Use LLM-provided y if present, otherwise compute
+        if "y" in step.position:
+            ny = int(step.position["y"])
+            used_llm_y = True
+        else:
+            ny = self.grid.next_y(x, z)
+            used_llm_y = False
         if not self.grid.config.is_valid_position(x, ny, z):
             raise ExecutionError(f"Position ({x},{ny},{z}) is out of bounds")
         self.grid.add(Block(color=color, x=x, y=ny, z=z))
+        self._track_y_source(used_llm_y)
         logger.info("  -> placed %s at (%d,%d,%d) [place]", color, x, ny, z)
         self._record_step_position(x, z, color)
 
@@ -306,12 +356,23 @@ class SpatialExecutor:
         color = self._resolve_color(step.color)
         x, z = self._resolve_position(step.position)
         count = self._resolve_count(step.count, hint_x=x, hint_z=z) if step.count != 1 else 1
+        self._require_llm_y(step, "place_relative")
 
-        for _ in range(count):
-            ny = self.grid.next_y(x, z)
+        # Use LLM-provided y if present, otherwise compute per-position
+        use_llm_y = "y" in step.position
+        start_y = int(step.position["y"]) if use_llm_y else None
+
+        for i in range(count):
+            if use_llm_y:
+                ny = start_y + i * 100
+                used_llm_y = True
+            else:
+                ny = self.grid.next_y(x, z)
+                used_llm_y = False
             if not self.grid.config.is_valid_position(x, ny, z):
                 raise ExecutionError(f"Position ({x},{ny},{z}) is out of bounds")
             self.grid.add(Block(color=color, x=x, y=ny, z=z))
+            self._track_y_source(used_llm_y)
             logger.info("  -> placed %s at (%d,%d,%d) [place_relative]", color, x, ny, z)
         self._record_step_position(x, z, color)
 
@@ -330,6 +391,7 @@ class SpatialExecutor:
             raise ExecutionError(f"extend_row requires position with x,z or relative_to: {pos}")
 
         count = self._resolve_count(step.count, hint_x=start_x, hint_z=start_z)
+        self._require_llm_y(step, "extend_row")
 
         try:
             dx, dz = direction_offset(dir_name, self.grid.config)
@@ -379,15 +441,26 @@ class SpatialExecutor:
                 start_z += dz
 
         cx, cz = start_x, start_z
+
+        # Use LLM-provided y if present, otherwise compute per-position
+        use_llm_y = "y" in pos
+        row_y = int(pos["y"]) if use_llm_y else None
+
         for i in range(count):
             if i > 0:
                 cx += dx
                 cz += dz
-            ny = self.grid.next_y(cx, cz)
+            if use_llm_y:
+                ny = row_y
+                used_llm_y = True
+            else:
+                ny = self.grid.next_y(cx, cz)
+                used_llm_y = False
             if not self.grid.config.is_valid_position(cx, ny, cz):
                 logger.warning("extend_row hit grid boundary at (%d,%d)", cx, cz)
                 break
             self.grid.add(Block(color=color, x=cx, y=ny, z=cz))
+            self._track_y_source(used_llm_y)
             logger.info("  -> placed %s at (%d,%d,%d) [extend_row]", color, cx, ny, cz)
         # Record the last block position in the row
         self._record_step_position(cx, cz, color)
@@ -396,17 +469,26 @@ class SpatialExecutor:
         """Place blocks at grid corners."""
         color = self._resolve_color(step.color)
         corners = self.grid.config.corner_positions
+        if self._strict_3d and "y" not in step.position:
+            raise ExecutionError(
+                "Strict 3D mode: place_at_corners requires explicit y"
+            )
 
         for corner_name, (cx, cz) in corners.items():
-            ny = self.grid.next_y(cx, cz)
+            ny = int(step.position["y"]) if "y" in step.position else self.grid.next_y(cx, cz)
             if self.grid.config.is_valid_position(cx, ny, cz):
                 self.grid.add(Block(color=color, x=cx, y=ny, z=cz))
+                self._track_y_source("y" in step.position)
 
     def _handle_place_along_edge(self, step: BuildStep) -> None:
         """Place blocks along an entire grid edge."""
         color = self._resolve_color(step.color)
         count = self._resolve_count(step.count)
         pos = step.position
+        if self._strict_3d and "y" not in pos:
+            raise ExecutionError(
+                "Strict 3D mode: place_along_edge requires explicit y"
+            )
         edge = pos.get("edge", pos.get("direction", "left")).lower()
 
         valid_xz = self.grid.config.valid_xz
@@ -424,9 +506,10 @@ class SpatialExecutor:
             raise ExecutionError(f"Unknown edge: {edge}")
 
         for cx, cz in positions:
-            ny = self.grid.next_y(cx, cz)
+            ny = int(pos["y"]) if "y" in pos else self.grid.next_y(cx, cz)
             if self.grid.config.is_valid_position(cx, ny, cz):
                 self.grid.add(Block(color=color, x=cx, y=ny, z=cz))
+                self._track_y_source("y" in pos)
 
     def _clamp_to_grid(self, x: int, z: int) -> tuple[int, int]:
         """Clamp coordinates to the nearest valid grid position."""

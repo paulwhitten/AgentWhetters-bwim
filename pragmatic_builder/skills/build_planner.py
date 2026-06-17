@@ -55,27 +55,29 @@ OUTPUT FORMAT (JSON object):
       "color": "Red" | "Blue" | ... | "Uncolored",
       "count": <integer> | "Uncounted",
       "position": {
-        "x": <int>, "z": <int>
+        "x": <int>, "y": <int>, "z": <int>
       }
       OR
       "position": {
         "relative_to": "origin" | "existing_<Color>_stack_at_<x>_<z>" | "leftmost" | "rightmost" | "frontmost" | "backmost",
         "direction": "right" | "left" | "front" | "behind" | "on_top",
-        "distance": <int, default 1>
+        "distance": <int, default 1>,
+        "y": <int>
       }
     }
   ]
 }
 
 POSITION AND THE Y-AXIS:
-- JSON position specifies x and z ONLY. Y is never included in the output.
-- Y is determined automatically by the execution engine:
-  * First block at any (x,z) → y=50 (ground level).
-  * Each additional block at the same (x,z) → y increments by 100 (150, 250, 350, 450).
-  * "stack" with count=N places N blocks vertically from the next available y at that (x,z).
-- Think of the x-z plane as a 2D board where blocks stack upward by gravity.
-- Use full 3D (x,y,z) coordinates in your spatial reasoning to verify logic, but \
-output only {"x":…, "z":…} in the JSON steps.
+- JSON position MUST include y. You are responsible for computing the correct y.
+- Ground level y=50. Each stacked block adds +100 to y (150, 250, 350, 450).
+- Valid y values: [50, 150, 250, 350, 450].
+- For "stack" with count=N: specify the y of the FIRST (bottom) block in the stack.
+  The remaining N-1 blocks are placed at y+100, y+200, etc.
+- For "place" and "extend_row": specify the y where the block(s) go.
+- You MUST track what is already on the grid. If a position (x,z) already has
+  a block at y=50, the next block there must be y=150, not y=50.
+- Use full 3D (x,y,z) coordinates in your spatial reasoning AND in the JSON output.
 
 RULES:
 - COLOR HANDLING (important):
@@ -202,43 +204,40 @@ EXAMPLE 1 — Chain reference with "in front of"
 Instruction: "Stack two red blocks in front of the existing red block. Build a blue stack to the left of the red stack."
 Grid: Red block at (200,50,-100).
 Reasoning:
-1. "in front of" = +z. Existing red at (200,50,-100) → new stack at x=200, z=-100+100=0. Two blocks auto-stack at y=50,150.
-2. "the red stack" = stack just built at z=0 → "to the left" = x=200-100=100, same z=0.
+1. "in front of" = +z. Existing red at (200,50,-100) → new stack at x=200, z=-100+100=0. Ground is empty at (200,0), so start at y=50. Two blocks at y=50,150.
+2. "the red stack" = stack just built at (200,0) → "to the left" = x=200-100=100, same z=0. Ground empty, start y=50.
 3. Blue count not specified → match red height = 2.
-→ JSON: positions use x,z only (y auto-stacked): {"x":200,"z":0} and {"x":100,"z":0}.
 Output:
 {"steps":[
-  {"action":"stack","color":"Red","count":2,"position":{"x":200,"z":0}},
-  {"action":"stack","color":"Blue","count":2,"position":{"x":100,"z":0}}
+  {"action":"stack","color":"Red","count":2,"position":{"x":200,"y":50,"z":0}},
+  {"action":"stack","color":"Blue","count":2,"position":{"x":100,"y":50,"z":0}}
 ]}
 
 EXAMPLE 2 — Row going RIGHT + stack behind last block
 Instruction: "Build a row of four red blocks, starting from the origin and going to the right. Stack three green blocks behind the last red block."
 Grid: empty.
 Reasoning:
-1. "going to the right" = direction right (+x). Start at origin x=0, z=0: row at x=0, 100, 200, 300 (all y=50 ground).
+1. "going to the right" = direction right (+x). Start at origin x=0, z=0. Grid empty so all at y=50: row at (0,50,0), (100,50,0), (200,50,0), (300,50,0).
 2. "last red block" = last placed at x=300, z=0.
-3. "behind" = -z → green stack at x=300, z=-100. Count=3, auto-stacking y=50,150,250.
-→ JSON: extend_row at {"x":0,"z":0,"direction":"right"}, stack at {"x":300,"z":-100}. Y omitted from JSON.
+3. "behind" = -z → green stack at x=300, z=-100. Ground empty, start y=50. Count=3: y=50,150,250.
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Red","count":4,"position":{"x":0,"z":0,"direction":"right"}},
-  {"action":"stack","color":"Green","count":3,"position":{"x":300,"z":-100}}
+  {"action":"extend_row","color":"Red","count":4,"position":{"x":0,"y":50,"z":0,"direction":"right"}},
+  {"action":"stack","color":"Green","count":3,"position":{"x":300,"y":50,"z":-100}}
 ]}
 
 EXAMPLE 3 — "Behind each" = horizontal, not stacking
 Instruction: "Place one green block on the highlighted square and one to its left. Place one yellow block behind each green block."
 Grid: empty.
 Reasoning:
-1. Highlighted square = origin → green at x=0, z=0 (y=50 ground). "to its left" → green at x=-100, z=0.
-2. "behind each green" = -z for each → yellow at x=0, z=-100 and x=-100, z=-100. All single blocks at y=50.
-→ JSON: four place steps with {"x":0,"z":0}, {"x":-100,"z":0}, {"x":0,"z":-100}, {"x":-100,"z":-100}. No y needed.
+1. Highlighted square = origin → green at (0,50,0). "to its left" → green at (-100,50,0). All ground level y=50.
+2. "behind each green" = -z for each → yellow at (0,50,-100) and (-100,50,-100). All single blocks at y=50.
 Output:
 {"steps":[
-  {"action":"place","color":"Green","count":1,"position":{"x":0,"z":0}},
-  {"action":"place","color":"Green","count":1,"position":{"x":-100,"z":0}},
-  {"action":"place","color":"Yellow","count":1,"position":{"x":0,"z":-100}},
-  {"action":"place","color":"Yellow","count":1,"position":{"x":-100,"z":-100}}
+  {"action":"place","color":"Green","count":1,"position":{"x":0,"y":50,"z":0}},
+  {"action":"place","color":"Green","count":1,"position":{"x":-100,"y":50,"z":0}},
+  {"action":"place","color":"Yellow","count":1,"position":{"x":0,"y":50,"z":-100}},
+  {"action":"place","color":"Yellow","count":1,"position":{"x":-100,"y":50,"z":-100}}
 ]}
 
 EXAMPLE 4 — Edge placement: back edge = fixed z=-400
@@ -246,12 +245,11 @@ Instruction: "Lay five red blocks along the back edge of the grid. Then place fi
 Grid: has some existing blocks.
 Reasoning:
 1. "back edge" = fixed z=-400, x varies from -200 to 200 (5 positions). All at y=50 ground.
-2. "directly in front of" = z=-400+100=-300, same x range.
-→ JSON: two extend_row steps at {"x":-200,"z":-400,"direction":"right"} and {"x":-200,"z":-300,"direction":"right"}, count=5 each.
+2. "directly in front of" = z=-400+100=-300, same x range. All at y=50.
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Red","count":5,"position":{"x":-200,"z":-400,"direction":"right"}},
-  {"action":"extend_row","color":"Yellow","count":5,"position":{"x":-200,"z":-300,"direction":"right"}}
+  {"action":"extend_row","color":"Red","count":5,"position":{"x":-200,"y":50,"z":-400,"direction":"right"}},
+  {"action":"extend_row","color":"Yellow","count":5,"position":{"x":-200,"y":50,"z":-300,"direction":"right"}}
 ]}
 
 EXAMPLE 5 — T shape: identify parts, find axis, find direction, extend
@@ -277,12 +275,12 @@ Reasoning:
    Past z=-200, continue -z: next positions (200,50,-300) and (200,50,-400). All y=50.
    WRONG: (200,150,-200) stacks vertically instead of extending horizontally!
 6. ARMS = crossbar tips. Left tip (100,50,0), right tip (300,50,0).
-   Extend outward along crossbar axis (x-axis): (0,50,0) and (400,50,0).
+   Extend outward along crossbar axis (x-axis): (0,50,0) and (400,50,0). All y=50.
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Red","count":2,"position":{"x":200,"z":-300,"direction":"behind"}},
-  {"action":"place","color":"Blue","count":1,"position":{"x":0,"z":0}},
-  {"action":"place","color":"Blue","count":1,"position":{"x":400,"z":0}}
+  {"action":"extend_row","color":"Red","count":2,"position":{"x":200,"y":50,"z":-300,"direction":"behind"}},
+  {"action":"place","color":"Blue","count":1,"position":{"x":0,"y":50,"z":0}},
+  {"action":"place","color":"Blue","count":1,"position":{"x":400,"y":50,"z":0}}
 ]}
 
 EXAMPLE 6 — Extend existing row going right + "block on top of each end"
@@ -292,39 +290,36 @@ Reasoning:
 1. Yellow row at z=-200, x goes from 0 to 100. "going right" = +x direction. Rightmost at x=100. Extend right from x=100: new at x=200 and x=300. All y=50 ground.
 2. Extended row spans x=0 to x=300. Ends: x=0 and x=300.
 3. "block on each end" = stack 1 block on each end. At x=0: existing at y=50 → new at y=150. At x=300: existing at y=50 → new at y=150. Color not stated → "Uncolored".
-→ JSON: extend_row at {"x":200,"z":-200,"direction":"right"} count=2, two stacks at {"x":0,"z":-200} and {"x":300,"z":-200} count=1 each. Y auto-stacks above existing.
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Yellow","count":2,"position":{"x":200,"z":-200,"direction":"right"}},
-  {"action":"stack","color":"Uncolored","count":1,"position":{"x":0,"z":-200}},
-  {"action":"stack","color":"Uncolored","count":1,"position":{"x":300,"z":-200}}
+  {"action":"extend_row","color":"Yellow","count":2,"position":{"x":200,"y":50,"z":-200,"direction":"right"}},
+  {"action":"stack","color":"Uncolored","count":1,"position":{"x":0,"y":150,"z":-200}},
+  {"action":"stack","color":"Uncolored","count":1,"position":{"x":300,"y":150,"z":-200}}
 ]}
 
 EXAMPLE 7 — "Stack blocks to the right" = separate column at +x, same z
 Instruction: "Place a stack of two yellow blocks to the right of the center square. Add a red stack of the same height to the right of it."
 Grid: empty.
 Reasoning:
-1. "to the right of the center square" → center=(0,0), right=+x → x=0+100=100, z=0. Stack 2 yellow (y=50,150 auto).
-2. "to the right of it" → x=100+100=200, z=0. "same height" = 2.
-→ JSON: two stacks at {"x":100,"z":0} count=2 and {"x":200,"z":0} count=2. Y auto-stacked.
+1. "to the right of the center square" → center=(0,0), right=+x → x=100, z=0. Ground empty, start y=50. Stack 2: y=50,150.
+2. "to the right of it" → x=100+100=200, z=0. "same height" = 2. Ground empty, start y=50.
 Output:
 {"steps":[
-  {"action":"stack","color":"Yellow","count":2,"position":{"x":100,"z":0}},
-  {"action":"stack","color":"Red","count":2,"position":{"x":200,"z":0}}
+  {"action":"stack","color":"Yellow","count":2,"position":{"x":100,"y":50,"z":0}},
+  {"action":"stack","color":"Red","count":2,"position":{"x":200,"y":50,"z":0}}
 ]}
 
 EXAMPLE 8 — Green row going LEFT (not right!)
 Instruction: "Place a row of five green blocks from the origin going left. Then stack four blocks on top of the last green block you placed."
 Grid: empty.
 Reasoning:
-1. "going left" = direction left (-x). Start at origin x=0, z=0: row at x=0, -100, -200, -300, -400 (all y=50 ground).
+1. "going left" = direction left (-x). Start at origin x=0, z=0. Grid empty so y=50: row at (0,50,0), (-100,50,0), (-200,50,0), (-300,50,0), (-400,50,0).
 2. "last green block you placed" = last in row = x=-400, z=0.
-3. Stack 4 on top at x=-400, z=0 → new blocks at y=150,250,350,450 (above existing y=50). Color not stated → "Uncolored".
-→ JSON: extend_row at {"x":0,"z":0,"direction":"left"}, stack at {"x":-400,"z":0} count=4. Y auto-stacks above existing.
+3. Stack 4 on top at (-400,0). Existing block at y=50, so start stacking at y=150: y=150,250,350,450. Color not stated → "Uncolored".
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Green","count":5,"position":{"x":0,"z":0,"direction":"left"}},
-  {"action":"stack","color":"Uncolored","count":4,"position":{"x":-400,"z":0}}
+  {"action":"extend_row","color":"Green","count":5,"position":{"x":0,"y":50,"z":0,"direction":"left"}},
+  {"action":"stack","color":"Uncolored","count":4,"position":{"x":-400,"y":150,"z":0}}
 ]}
 
 EXAMPLE 9 — Identify existing row, extend it, place relative to endpoint
@@ -332,14 +327,13 @@ Instruction: "Extend the existing blue row by two blocks. Then stack two green b
 Grid: Blue blocks at (-100,50,0), (0,50,0), (100,50,0).
 Reasoning:
 1. IDENTIFY the row: 3 blue blocks share z=0, x varies -100→0→100 → this is an x-row at z=0, extending in +x direction. Leftmost: x=-100. Rightmost: x=100.
-2. "extend by two" — row runs in +x, continue: x=100+100=200 and x=200+100=300. Two new blue blocks at z=0, y=50 ground.
+2. "extend by two" — row runs in +x, continue: x=200 and x=300. Two new blue blocks at z=0, y=50 ground.
 3. IDENTIFY for relative placement: "leftmost blue block" = x=-100, z=0 (unchanged by the rightward extension).
-4. "behind the leftmost" = -z direction → z=0-100=-100, x=-100. Stack 2 green, y=50,150 auto.
-→ JSON: extend_row at {"x":200,"z":0,"direction":"right"} count=2, stack at {"x":-100,"z":-100} count=2.
+4. "behind the leftmost" = -z direction → z=0-100=-100, x=-100. Ground empty at (-100,-100), start y=50. Stack 2 green: y=50,150.
 Output:
 {"steps":[
-  {"action":"extend_row","color":"Blue","count":2,"position":{"x":200,"z":0,"direction":"right"}},
-  {"action":"stack","color":"Green","count":2,"position":{"x":-100,"z":-100}}
+  {"action":"extend_row","color":"Blue","count":2,"position":{"x":200,"y":50,"z":0,"direction":"right"}},
+  {"action":"stack","color":"Green","count":2,"position":{"x":-100,"y":50,"z":-100}}
 ]}
 """
 

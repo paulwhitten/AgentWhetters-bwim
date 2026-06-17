@@ -1,8 +1,10 @@
 import argparse
+import asyncio
 import logging
 import os
 import re
 import sys
+import time
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.events import EventQueue
@@ -10,7 +12,8 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from a2a.utils import new_agent_text_message
-from openai import AsyncOpenAI, AsyncAzureOpenAI
+import httpx
+from openai import AsyncOpenAI, AsyncAzureOpenAI, APITimeoutError, APIConnectionError
 import uvicorn
 
 # Add parent directory to path so skills package is importable
@@ -27,6 +30,24 @@ from skills.plan_verifier import verify_plan, auto_fix_direction, auto_fix_each_
 from skills.plan_patcher import patch_chain_references
 
 logger = logging.getLogger(__name__)
+
+# Default timeout for LLM requests (seconds).
+_LLM_TIMEOUT = float(
+    os.getenv("OPENAI_TIMEOUT_PURPLE", "").strip()
+    or os.getenv("OPENAI_TIMEOUT", "600")
+)
+
+# How many times to retry a transient LLM error (timeout / connection reset).
+_LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+
+# Transient exception types from httpx / openai that are worth retrying.
+_TRANSIENT_ERRORS = (
+    APITimeoutError,
+    APIConnectionError,
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+)
 
 # Direct LLM fallback system prompt (used when skills pipeline fails)
 _FALLBACK_SYSTEM_PROMPT = (
@@ -145,6 +166,9 @@ class OpenAIPurpleAgent(AgentExecutor):
         azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "").strip()
         if azure_deployment:
             self._model = azure_deployment
+        self._strict_3d = os.getenv("BWIM_STRICT_3D", "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
         self._config = GridConfig()
         self._planner = BuildPlanner(self._client, self._model, self._config)
         # Conversation history per context for sliding window
@@ -434,10 +458,259 @@ class OpenAIPurpleAgent(AgentExecutor):
     ) -> str | None:
         """Run the skills-based build pipeline.
 
-        ABLATION: 2.5-D decomposition disabled.
-        Always returns None so the caller falls back to direct 3D LLM output.
+        Returns a [BUILD] or [ASK] response, or None if the pipeline fails.
+
+        ABLATION NOTE: 2.5-D y-computation disabled. The LLM now provides y
+        coordinates in its plan output, and the spatial executor uses them
+        directly instead of computing y from stacking rules.
         """
-        return None
+        try:
+            # ── Step 1: Pre-LLM underspec check on the raw instruction ──
+            heuristic_result = detect_underspec_heuristic(parsed.instruction_text)
+            logger.info("Heuristic: %s", heuristic_result.details)
+            inferred_count = override_count or heuristic_result.inferred_count or 3
+
+            # ── Compound: both color and count missing ──
+            if (heuristic_result.has_missing_color
+                    and heuristic_result.has_missing_number
+                    and ctx_id not in self._asked):
+                self._pending[ctx_id] = {
+                    "parsed": parsed,
+                    "original_input": original_input,
+                    "inferred_count": inferred_count,
+                    "ask_type": "compound",
+                    "uncounted_color": heuristic_result.uncounted_color,
+                }
+                question = (
+                    heuristic_result.suggested_compound_question
+                    or "What color should the unspecified blocks be, "
+                       "and how many blocks should be in that stack?"
+                )
+                logger.info("Both color and count missing, compound ask: %s", question)
+                return f"[ASK];{question}"
+
+            if heuristic_result.has_missing_color and ctx_id not in self._asked:
+                self._pending[ctx_id] = {
+                    "parsed": parsed,
+                    "original_input": original_input,
+                    "inferred_count": inferred_count,
+                    "ask_type": "color",
+                }
+                question = (
+                    heuristic_result.suggested_question
+                    or "What color should the unspecified blocks be?"
+                )
+                logger.info("Missing color detected pre-LLM, asking: %s", question)
+                return f"[ASK];{question}"
+
+            # Count is missing but color is known — ASK for the count.
+            if (heuristic_result.has_missing_number
+                    and not heuristic_result.has_missing_color
+                    and ctx_id not in self._asked
+                    and override_count is None):
+                self._pending[ctx_id] = {
+                    "parsed": parsed,
+                    "original_input": original_input,
+                    "inferred_count": inferred_count,
+                    "ask_type": "count",
+                    "uncounted_color": heuristic_result.uncounted_color,
+                }
+                question = (
+                    heuristic_result.suggested_count_question
+                    or "How many blocks should be in the unspecified stack?"
+                )
+                logger.info("Missing count detected pre-LLM, asking: %s", question)
+                return f"[ASK];{question}"
+
+            if heuristic_result.has_missing_color:
+                # Already asked this round — fill with inferred color and continue
+                fill = heuristic_result.inferred_color or "Purple"
+                logger.warning(
+                    "Missing color but already asked this round, "
+                    "patching instruction with '%s'", fill,
+                )
+                patched = patch_instruction_with_color(
+                    parsed.instruction_text, fill
+                )
+                parsed.instruction_text = patched
+
+            # ── Step 2: Analyze existing structure for the planner ──
+            structure_info = analyze_structure(parsed.start_grid)
+            logger.info("Structure analysis: %s", structure_info.describe()[:200])
+
+            # ── Step 3: Decompose instruction into build steps via LLM ──
+            steps = None
+            for attempt in range(_LLM_MAX_RETRIES + 1):
+                t0 = time.monotonic()
+                try:
+                    steps = await self._planner.decompose(
+                        parsed.instruction_text,
+                        parsed.start_grid,
+                        parsed.speaker,
+                        structure_hint=structure_info.describe(),
+                    )
+                    elapsed = time.monotonic() - t0
+                    if steps:
+                        logger.info(
+                            "Planner succeeded in %.1fs (attempt %d)",
+                            elapsed, attempt + 1,
+                        )
+                        break
+                    else:
+                        logger.info("Planner returned no steps (attempt %d)", attempt + 1)
+                        break
+                except _TRANSIENT_ERRORS as exc:
+                    elapsed = time.monotonic() - t0
+                    if attempt < _LLM_MAX_RETRIES:
+                        backoff = 2 ** attempt * 5
+                        logger.warning(
+                            "Planner transient error after %.1fs (attempt %d/%d): %s. "
+                            "Retrying in %ds...",
+                            elapsed, attempt + 1, _LLM_MAX_RETRIES + 1,
+                            type(exc).__name__, backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                    else:
+                        logger.error(
+                            "Planner transient error after %.1fs, all retries exhausted: %s",
+                            elapsed, type(exc).__name__,
+                        )
+                        if self._strict_3d:
+                            logger.warning(
+                                "Strict 3D mode: pipeline failure does not fallback to LLM"
+                            )
+                            return "[BUILD]"
+                        return None
+
+            if not steps:
+                logger.info("Planner returned no steps, falling back")
+                if self._strict_3d:
+                    logger.warning(
+                        "Strict 3D mode: planner returned no steps; emitting fail-closed [BUILD]"
+                    )
+                    return "[BUILD]"
+                return None
+
+            logger.info("Planner produced %d steps", len(steps))
+            for i, s in enumerate(steps):
+                logger.info("  Step %d: %s %s count=%s pos=%s", i+1, s.action, s.color, s.count, s.position)
+
+            # Step 3b: Patch chain reference coordinates
+            steps = patch_chain_references(steps, parsed.start_grid)
+
+            # Step 3c: Auto-fix direction errors (deterministic)
+            steps = auto_fix_direction(parsed.instruction_text, steps)
+
+            # Step 3c2: Auto-fix each-end cap positions (deterministic)
+            steps = auto_fix_each_end_caps(
+                parsed.instruction_text, steps, parsed.start_grid
+            )
+
+            # Step 3c3: Auto-fix T-shape extend direction (deterministic)
+            steps = auto_fix_t_shape_extend(
+                parsed.instruction_text, steps, parsed.start_grid
+            )
+
+            # Step 3d: Verify plan against instruction
+            verification = verify_plan(
+                parsed.instruction_text, steps, len(parsed.start_grid.blocks)
+            )
+            if verification.has_critical:
+                logger.info(
+                    "Plan verification found critical issues, re-planning: %s",
+                    verification.correction_prompt()[:300],
+                )
+                steps = await self._planner.decompose(
+                    parsed.instruction_text,
+                    parsed.start_grid,
+                    parsed.speaker,
+                    structure_hint=structure_info.describe(),
+                    correction_hint=verification.correction_prompt(),
+                )
+                if not steps:
+                    logger.info("Re-plan returned no steps, falling back")
+                    if self._strict_3d:
+                        logger.warning(
+                            "Strict 3D mode: re-plan returned no steps; emitting fail-closed [BUILD]"
+                        )
+                        return "[BUILD]"
+                    return None
+                steps = patch_chain_references(steps, parsed.start_grid)
+                steps = auto_fix_direction(parsed.instruction_text, steps)
+                steps = auto_fix_each_end_caps(
+                    parsed.instruction_text, steps, parsed.start_grid
+                )
+                steps = auto_fix_t_shape_extend(
+                    parsed.instruction_text, steps, parsed.start_grid
+                )
+                logger.info("Re-planned %d steps", len(steps))
+                for i, s in enumerate(steps):
+                    logger.info("  Re-step %d: %s %s count=%s pos=%s", i+1, s.action, s.color, s.count, s.position)
+
+            # ── Step 4: Safety net — resolve any Uncolored steps ──
+            _UNCOLORED = {"uncolored", "unknown", "unspecified", "?"}
+            uncolored_steps = [s for s in steps if s.color.lower() in _UNCOLORED]
+
+            if uncolored_steps:
+                fill = heuristic_result.inferred_color or "Purple"
+                logger.info(
+                    "Safety net: resolving %d Uncolored step(s) to '%s'",
+                    len(uncolored_steps), fill,
+                )
+                for s in uncolored_steps:
+                    s.color = fill
+
+            # ── Resolve uncounted steps ──
+            for step in steps:
+                if isinstance(step.count, str) and step.count.lower() in (
+                    "uncounted", "unknown", "unspecified", "?"
+                ):
+                    logger.info("Resolving Uncounted -> %d", inferred_count)
+                    step.count = inferred_count
+
+            # ── Log steps after all fixes (pre-execution) ──
+            logger.info("Final steps after all fixes (%d total):", len(steps))
+            for i, s in enumerate(steps):
+                logger.info("  Final step %d: %s %s count=%s pos=%s", i+1, s.action, s.color, s.count, s.position)
+
+            # ── Step 5: Execute steps (LLM-provided y used directly) ──
+            exec_grid = Grid.from_str(parsed.start_grid.to_str(), config=self._config)
+            executor = SpatialExecutor(exec_grid)
+            executor.execute_plan(steps)
+
+            # ── Step 6: Format response ──
+            response = format_build_response(exec_grid)
+
+            # ── Step 7: Validate ──
+            is_valid, errors = validate_build_response(response, self._config)
+            if not is_valid:
+                logger.warning("Validation failed: %s", errors)
+                if self._strict_3d:
+                    logger.warning(
+                        "Strict 3D mode: invalid build response; emitting fail-closed [BUILD]"
+                    )
+                    return "[BUILD]"
+                return None
+
+            logger.info("Skills pipeline produced valid response with %d blocks", len(exec_grid.blocks))
+            return response
+
+        except ExecutionError as exc:
+            logger.warning("Execution error in skills pipeline: %s", exc)
+            if self._strict_3d:
+                logger.warning(
+                    "Strict 3D mode: execution error does not fallback to LLM"
+                )
+                return "[BUILD]"
+            return None
+        except Exception as exc:
+            logger.warning("Unexpected error in skills pipeline: %s", exc)
+            if self._strict_3d:
+                logger.warning(
+                    "Strict 3D mode: unexpected pipeline error does not fallback to LLM"
+                )
+                return "[BUILD]"
+            return None
 
     async def _direct_llm_call(self, user_input: str, ctx_id: str) -> str:
         """Fallback: direct LLM call with the original system prompt."""
