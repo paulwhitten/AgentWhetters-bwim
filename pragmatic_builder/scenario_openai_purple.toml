@@ -1,11 +1,11 @@
 [green_agent]
-endpoint = "http://127.0.0.1:9009"
-cmd = "python evaluator_proxy.py --host 127.0.0.1 --port 9009"
+endpoint = "http://127.0.0.1:9039"
+cmd = "python evaluator_proxy.py --host 127.0.0.1 --port 9039"
 
 [[participants]]
 role = "rita"
-endpoint = "http://127.0.0.1:9022"
-cmd = "python purple_openai/server.py --host 127.0.0.1 --port 9022 --debug"
+endpoint = "http://127.0.0.1:9042"
+cmd = "python purple_openai/server.py --host 127.0.0.1 --port 9042 --debug"
 
 [config]
 "list1_path" = "data/List1_FINAL_stimuli_list.csv"

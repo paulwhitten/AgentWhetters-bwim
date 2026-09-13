@@ -141,7 +141,7 @@ async def main():
         card_url = f"http://{card_host}:{args.port}"
 
     base_dir = os.getenv("AGENT_TRANSCRIPT_DIR", "logs/transcripts")
-    run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
+    run_id = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     transcript_path = Path(base_dir) / run_id / "conversation.log"
     agent = BuildingInstructorGreenAgent(debug=debug, transcript_path=str(transcript_path))
     executor = GreenExecutor(agent, debug=debug)
