@@ -35,7 +35,7 @@ Detailed pipeline: [purple agent README](./pragmatic_builder/purple_openai/READM
 - **Leaderboard**: [agentbeats.dev/agentbeater/build-what-i-mean](https://agentbeats.dev/agentbeater/build-what-i-mean) — 1st place (tied)
 - **Paper** (submitted to NAECON 2026): [arxiv.org/abs/2605.07066](https://arxiv.org/abs/2605.07066)
 - **Structural accuracy**: 94.6% with GPT-4o-mini on BWIM (vs. 76.3% best competing system)
-- **Ablation**: removing 2.5-D decomposition drops accuracy by 50.7 points to 43.8%
+- **Ablation**: removing 2.5-D decomposition drops accuracy by 28.7 points to 65.9%
 - **IGLU transfer**: block-level F1 improves from 0.723 to 0.798 across 500 tasks
 - **Provisional patent** filed April 2026
 
